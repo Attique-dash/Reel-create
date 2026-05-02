@@ -1,0 +1,49 @@
+name: AI Automation (Gemini)
+
+on:
+  push:
+
+jobs:
+  generate-text:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Install jq (for parsing JSON)
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Read prompt and call Gemini API
+        run: |
+          PROMPT=$(cat prompt.txt)
+
+          RESPONSE=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent" \
+            -H "Content-Type: application/json" \
+            -H "X-goog-api-key: $GEMINI_API_KEY" \
+            -X POST \
+            -d "{
+              \"contents\": [
+                {
+                  \"parts\": [
+                    {
+                      \"text\": \"$PROMPT\"
+                    }
+                  ]
+                }
+              ]
+            }")
+
+          echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text' > output.txt
+
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Commit output
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git add output.txt
+
+          git commit -m "AI generated content (Gemini)" || echo "No changes to commit"
+          git push
