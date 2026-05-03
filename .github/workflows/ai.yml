@@ -18,29 +18,28 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Read prompt and call Gemini API
+        # FIX: Pass the prompt via an environment variable (PROMPT_TEXT) instead of
+        # interpolating it directly into the shell string.  Direct interpolation
+        # breaks on newlines, quotes, or special characters and is a shell-injection risk.
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PROMPT_TEXT: ${{ github.workspace }}/prompt.txt
         run: |
-          PROMPT=$(cat prompt.txt)
+          # Read file content into variable safely
+          PROMPT="$(cat "$PROMPT_TEXT")"
 
-          RESPONSE=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent" \
+          # Build JSON payload using jq so special characters are escaped correctly
+          PAYLOAD=$(jq -n --arg text "$PROMPT" \
+            '{contents:[{parts:[{text: $text}]}]}')
+
+          RESPONSE=$(curl -s \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent" \
             -H "Content-Type: application/json" \
             -H "X-goog-api-key: $GEMINI_API_KEY" \
             -X POST \
-            -d "{
-              \"contents\": [
-                {
-                  \"parts\": [
-                    {
-                      \"text\": \"$PROMPT\"
-                    }
-                  ]
-                }
-              ]
-            }")
+            -d "$PAYLOAD")
 
           echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text' > output.txt
-
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
       - name: Commit output
         run: |

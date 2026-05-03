@@ -15,18 +15,21 @@ OUTPUT_FOLDER = os.getenv("OUTPUT_FOLDER", "./output_reels")
 YOUTUBE_CLIENT_SECRETS_FILE = os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "client_secrets.json")
 
 # Video Processing
-MAX_VIDEO_DURATION = int(os.getenv("MAX_VIDEO_DURATION", "300"))  # 5 minutes max for source
-TARGET_REEL_DURATION_MIN = 15  # seconds
-TARGET_REEL_DURATION_MAX = 60  # seconds
-VIDEO_WIDTH = 1080  # Vertical video width
-VIDEO_HEIGHT = 1920  # Vertical video height (9:16 aspect ratio)
+MAX_VIDEO_DURATION = int(os.getenv("MAX_VIDEO_DURATION", "300"))  # 5 minutes max
+
+# FIX: 10-15 second reels as requested
+TARGET_REEL_DURATION_MIN = 10   # seconds
+TARGET_REEL_DURATION_MAX = 15   # seconds
+
+VIDEO_WIDTH = 1080   # Vertical (9:16)
+VIDEO_HEIGHT = 1920
 
 # YouTube Settings
 YOUTUBE_API_SERVICE_NAME = "youtube"
 YOUTUBE_API_VERSION = "v3"
 YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 
-# Categories mapping
+# Categories
 VIDEO_CATEGORIES = {
     "Film & Animation": 1,
     "Autos & Vehicles": 2,
@@ -42,11 +45,11 @@ VIDEO_CATEGORIES = {
     "Howto & Style": 26,
     "Education": 27,
     "Science & Technology": 28,
-    "Nonprofits & Activism": 29
+    "Nonprofits & Activism": 29,
 }
 
-# Gemini Model
-GEMINI_MODEL = "gemini-1.5-flash"  # Free tier model
+# FIX: updated to a current, stable Gemini model name
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest")
 
-# Scheduler Settings
+# Scheduler
 DAILY_UPLOAD_TIME = os.getenv("DAILY_UPLOAD_TIME", "09:00")
