@@ -1,0 +1,29 @@
+# Secrets
+.env
+.env.local
+client_secrets.json
+youtube_token.pickle
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Videos & media
+videos/
+downloaded_videos/
+output_reels/
+*.mp4
+*.mkv
+*.webm
+
+# Logs
+automation_log.txt
+*.log
+
+# OS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
