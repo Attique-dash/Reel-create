@@ -43,26 +43,25 @@ class VideoAnalyzer:
     def transcribe_audio(self, audio_path: str) -> str:
         """Transcribe audio to text via Gemini Files API"""
         try:
-            # FIX: upload_file is a top-level function in genai, not on the model
-            audio_file = genai.upload_file(path=audio_path, mime_type="audio/mpeg")
-
-            # Poll until file is ACTIVE
+            audio_file = self.client.files.upload(
+                path=audio_path,
+                config={"mime_type": "audio/mpeg"}
+            )
             for _ in range(10):
-                state = genai.get_file(audio_file.name).state.name
-                if state == "ACTIVE":
+                file_info = self.client.files.get(name=audio_file.name)
+                if file_info.state.name == "ACTIVE":
                     break
-                if state == "FAILED":
+                if file_info.state.name == "FAILED":
                     print("[transcribe_audio] File processing failed.")
                     return ""
                 time.sleep(2)
 
-            prompt = (
-                "Please transcribe this audio file. "
-                "Return ONLY the transcribed text, no additional commentary."
+            prompt = "Transcribe this audio. Return ONLY the transcribed text."
+            response = self.client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[prompt, audio_file]
             )
-            response = self.client.models.generate_content(model=GEMINI_MODEL, contents=[prompt, audio_file])
             return response.text.strip() if response.text else ""
-
         except Exception as e:
             print(f"[transcribe_audio] Error: {e}")
             return ""

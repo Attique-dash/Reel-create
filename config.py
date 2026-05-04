@@ -49,7 +49,6 @@ VIDEO_CATEGORIES = {
 }
 
 # FIX: updated to a current, stable Gemini model name
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest")
-
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 # Scheduler
 DAILY_UPLOAD_TIME = os.getenv("DAILY_UPLOAD_TIME", "09:00")
