@@ -9,18 +9,18 @@ import time
 from pathlib import Path
 from typing import List, Dict, Optional
 
-import google.generativeai as genai
+from google import genai
 from config import GEMINI_API_KEY, GEMINI_MODEL, VIDEO_SOURCE_FOLDER
 
 # Configure Gemini
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 class VideoAnalyzer:
     """Analyzes videos to extract hot words, topics, and generate metadata"""
 
     def __init__(self):
-        self.model = genai.GenerativeModel(GEMINI_MODEL)
+        self.client = client
 
     # ------------------------------------------------------------------
     # Audio / frames
@@ -60,7 +60,7 @@ class VideoAnalyzer:
                 "Please transcribe this audio file. "
                 "Return ONLY the transcribed text, no additional commentary."
             )
-            response = self.model.generate_content([prompt, audio_file])
+            response = self.client.models.generate_content(model=GEMINI_MODEL, contents=[prompt, audio_file])
             return response.text.strip() if response.text else ""
 
         except Exception as e:
@@ -157,7 +157,7 @@ Audio transcript (first 1000 chars):
                         {"inline_data": self._frame_to_inline_data(frame_path)}
                     )
 
-            response = self.model.generate_content(content_parts)
+            response = self.client.models.generate_content(model=GEMINI_MODEL, contents=content_parts)
 
             # Clean up frames
             for frame_path in frames:
@@ -213,7 +213,7 @@ Audio transcript (first 1000 chars):
                 "YouTube Shorts, TikTok, and Instagram Reels. "
                 "Return ONLY a valid JSON array of strings, no markdown."
             )
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
             text = response.text or ""
 
             if "```json" in text:
@@ -246,7 +246,7 @@ Return ONLY valid JSON (no markdown):
   "sound_suggestions": "Trending sound or music style"
 }}
 """
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
             text = response.text or ""
 
             if "```json" in text:
