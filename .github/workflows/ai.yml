@@ -1,50 +1,444 @@
-name: AI Automation (Gemini)
+name: AI YouTube Automation
 
 on:
+  # Run on a schedule - every day at 9 AM UTC
+  schedule:
+    - cron: '0 9 * * *'
+
+  # Allow manual trigger from GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      query:
+        description: 'Search query for videos'
+        required: false
+        default: 'trending viral shorts'
+      privacy:
+        description: 'Upload privacy (private/unlisted/public)'
+        required: false
+        default: 'private'
+      max_videos:
+        description: 'Max videos to download'
+        required: false
+        default: '2'
+
+  # Also run on push to main (for testing)
   push:
+    branches: [ main ]
 
 permissions:
   contents: write
 
+# ─────────────────────────────────────────────
+# ENV available to all jobs
+# ─────────────────────────────────────────────
+env:
+  GEMINI_API_KEY:               ${{ secrets.GEMINI_API_KEY }}
+  YOUTUBE_CLIENT_SECRETS_JSON:  ${{ secrets.YOUTUBE_CLIENT_SECRETS_JSON }}
+  YOUTUBE_TOKEN_PICKLE_B64:     ${{ secrets.YOUTUBE_TOKEN_PICKLE_B64 }}
+  GEMINI_MODEL:                 gemini-2.0-flash-lite
+  VIDEO_SOURCE_FOLDER:          ./downloaded_videos
+  OUTPUT_FOLDER:                ./output_reels
+  MAX_VIDEO_DURATION:           "300"
+  DAILY_UPLOAD_TIME:            "09:00"
+
 jobs:
-  generate-text:
+  # ═══════════════════════════════════════════
+  # JOB 1 — Smoke test (always runs first)
+  # ═══════════════════════════════════════════
+  smoke-test:
+    name: 🧪 Smoke Test
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
 
-      - name: Read prompt and call Gemini API
-        # FIX: Pass the prompt via an environment variable (PROMPT_TEXT) instead of
-        # interpolating it directly into the shell string.  Direct interpolation
-        # breaks on newlines, quotes, or special characters and is a shell-injection risk.
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PROMPT_TEXT: ${{ github.workspace }}/prompt.txt
+      - name: Install system dependencies
         run: |
-          # Read file content into variable safely
-          PROMPT="$(cat "$PROMPT_TEXT")"
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg imagemagick
 
-          # Build JSON payload using jq so special characters are escaped correctly
-          PAYLOAD=$(jq -n --arg text "$PROMPT" \
-            '{contents:[{parts:[{text: $text}]}]}')
-
-          RESPONSE=$(curl -s \
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent" \
-            -H "Content-Type: application/json" \
-            -H "X-goog-api-key: $GEMINI_API_KEY" \
-            -X POST \
-            -d "$PAYLOAD")
-
-          echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text' > output.txt
-
-      - name: Commit output
+      - name: Install Python dependencies
         run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "actions@github.com"
-          git add output.txt
-          git commit -m "AI generated content (Gemini)" || echo "No changes"
-          git push
+          pip install --upgrade pip
+          pip install \
+            google-genai \
+            yt-dlp \
+            "moviepy==1.0.3" \
+            google-auth \
+            google-auth-oauthlib \
+            google-auth-httplib2 \
+            google-api-python-client \
+            requests \
+            python-dotenv \
+            schedule \
+            pillow \
+            numpy \
+            pydub \
+            ffmpeg-python
+
+      - name: Create .env file
+        run: |
+          cat > .env << 'EOF'
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_CLIENT_SECRETS_FILE=client_secrets.json
+          VIDEO_SOURCE_FOLDER=./downloaded_videos
+          OUTPUT_FOLDER=./output_reels
+          MAX_VIDEO_DURATION=300
+          DAILY_UPLOAD_TIME=09:00
+          GEMINI_MODEL=gemini-2.0-flash-lite
+          EOF
+
+      - name: Run smoke test
+        run: python main.py test
+
+  # ═══════════════════════════════════════════
+  # JOB 2 — Download videos
+  # ═══════════════════════════════════════════
+  download:
+    name: 📥 Download Videos
+    runs-on: ubuntu-latest
+    needs: smoke-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            google-genai \
+            yt-dlp \
+            "moviepy==1.0.3" \
+            google-auth \
+            google-auth-oauthlib \
+            google-auth-httplib2 \
+            google-api-python-client \
+            requests \
+            python-dotenv \
+            schedule \
+            pillow \
+            numpy \
+            pydub \
+            ffmpeg-python
+
+      - name: Create .env file
+        run: |
+          cat > .env << 'EOF'
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_CLIENT_SECRETS_FILE=client_secrets.json
+          VIDEO_SOURCE_FOLDER=./downloaded_videos
+          OUTPUT_FOLDER=./output_reels
+          MAX_VIDEO_DURATION=300
+          DAILY_UPLOAD_TIME=09:00
+          GEMINI_MODEL=gemini-2.0-flash-lite
+          EOF
+
+      - name: Create output folders
+        run: |
+          mkdir -p downloaded_videos
+          mkdir -p output_reels/preview
+
+      - name: Download trending videos
+        run: |
+          QUERY="${{ github.event.inputs.query || 'trending viral shorts' }}"
+          MAX="${{ github.event.inputs.max_videos || '2' }}"
+          echo "🔍 Downloading: $QUERY (max: $MAX)"
+          python main.py download --query "$QUERY" --max "$MAX"
+
+      - name: List downloaded videos
+        run: |
+          echo "📁 Downloaded videos:"
+          ls -lh downloaded_videos/ || echo "No videos found"
+
+      - name: Upload videos as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloaded-videos
+          path: downloaded_videos/
+          retention-days: 1
+
+  # ═══════════════════════════════════════════
+  # JOB 3 — Analyze + Create Reels
+  # ═══════════════════════════════════════════
+  create-reels:
+    name: 🎬 Analyze & Create Reels
+    runs-on: ubuntu-latest
+    needs: download
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg imagemagick
+
+      - name: Configure ImageMagick policy (required for MoviePy TextClip)
+        run: |
+          sudo sed -i 's/rights="none" pattern="@\*"/rights="read|write" pattern="@*"/' \
+            /etc/ImageMagick-6/policy.xml || true
+          # Also allow PDF/PS which is blocked by default
+          sudo sed -i 's/<policy domain="coder" rights="none" pattern="PDF"/<policy domain="coder" rights="read|write" pattern="PDF"/' \
+            /etc/ImageMagick-6/policy.xml || true
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            google-genai \
+            yt-dlp \
+            "moviepy==1.0.3" \
+            google-auth \
+            google-auth-oauthlib \
+            google-auth-httplib2 \
+            google-api-python-client \
+            requests \
+            python-dotenv \
+            schedule \
+            pillow \
+            numpy \
+            pydub \
+            ffmpeg-python
+
+      - name: Create .env file
+        run: |
+          cat > .env << 'EOF'
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_CLIENT_SECRETS_FILE=client_secrets.json
+          VIDEO_SOURCE_FOLDER=./downloaded_videos
+          OUTPUT_FOLDER=./output_reels
+          MAX_VIDEO_DURATION=300
+          DAILY_UPLOAD_TIME=09:00
+          GEMINI_MODEL=gemini-2.0-flash-lite
+          EOF
+
+      - name: Create output folders
+        run: |
+          mkdir -p downloaded_videos
+          mkdir -p output_reels/preview
+
+      - name: Download videos artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: downloaded-videos
+          path: downloaded_videos/
+
+      - name: List videos to process
+        run: |
+          echo "📁 Videos to process:"
+          ls -lh downloaded_videos/
+
+      - name: Analyze and create reels
+        run: |
+          for video in downloaded_videos/*.mp4 downloaded_videos/*.mkv downloaded_videos/*.webm; do
+            if [ -f "$video" ]; then
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🎬 Processing: $video"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+              echo "🤖 Analyzing..."
+              python main.py analyze --video "$video" || echo "⚠️ Analysis failed, continuing..."
+
+              echo "✂️  Creating reels..."
+              python main.py create --video "$video" || echo "⚠️ Reel creation failed, continuing..."
+            fi
+          done
+
+      - name: List created reels
+        run: |
+          echo "🎬 Created reels:"
+          ls -lh output_reels/*.mp4 2>/dev/null || echo "No reels created"
+          echo ""
+          echo "📁 Analysis JSON files:"
+          ls -lh output_reels/*.json 2>/dev/null || echo "No JSON files"
+
+      - name: Upload reels as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-reels
+          path: output_reels/
+          retention-days: 3
+
+  # ═══════════════════════════════════════════
+  # JOB 4 — Upload to YouTube
+  # (only runs if YOUTUBE secrets are set)
+  # ═══════════════════════════════════════════
+  upload-youtube:
+    name: 📤 Upload to YouTube
+    runs-on: ubuntu-latest
+    needs: create-reels
+    # Only upload if YouTube credentials secret exists
+    if: ${{ secrets.YOUTUBE_CLIENT_SECRETS_JSON != '' && secrets.YOUTUBE_TOKEN_PICKLE_B64 != '' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            google-genai \
+            yt-dlp \
+            "moviepy==1.0.3" \
+            google-auth \
+            google-auth-oauthlib \
+            google-auth-httplib2 \
+            google-api-python-client \
+            requests \
+            python-dotenv \
+            schedule \
+            pillow \
+            numpy \
+            pydub \
+            ffmpeg-python
+
+      - name: Create .env file
+        run: |
+          cat > .env << 'EOF'
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_CLIENT_SECRETS_FILE=client_secrets.json
+          VIDEO_SOURCE_FOLDER=./downloaded_videos
+          OUTPUT_FOLDER=./output_reels
+          MAX_VIDEO_DURATION=300
+          DAILY_UPLOAD_TIME=09:00
+          GEMINI_MODEL=gemini-2.0-flash-lite
+          EOF
+
+      - name: Restore YouTube credentials
+        run: |
+          # Restore client_secrets.json from secret
+          echo '${{ secrets.YOUTUBE_CLIENT_SECRETS_JSON }}' > client_secrets.json
+
+          # Restore youtube_token.pickle from base64-encoded secret
+          echo '${{ secrets.YOUTUBE_TOKEN_PICKLE_B64 }}' | base64 -d > youtube_token.pickle
+
+          echo "✅ YouTube credentials restored"
+
+      - name: Download reels artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: output-reels
+          path: output_reels/
+
+      - name: Create folders
+        run: mkdir -p output_reels/preview
+
+      - name: Upload reels to YouTube
+        run: |
+          PRIVACY="${{ github.event.inputs.privacy || 'private' }}"
+          echo "📤 Uploading with privacy: $PRIVACY"
+
+          for reel in output_reels/reel_*.mp4; do
+            if [ -f "$reel" ]; then
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "📤 Uploading: $reel"
+              python main.py upload --video "$reel" --privacy "$PRIVACY" \
+                || echo "⚠️ Upload failed for $reel, continuing..."
+            fi
+          done
+
+      - name: Save updated token
+        # Save refreshed token back to use next time
+        run: |
+          if [ -f youtube_token.pickle ]; then
+            NEW_TOKEN=$(base64 -w 0 youtube_token.pickle)
+            echo "Updated token (copy this to your YOUTUBE_TOKEN_PICKLE_B64 secret if changed):"
+            echo "$NEW_TOKEN" | head -c 50
+            echo "..."
+          fi
+
+  # ═══════════════════════════════════════════
+  # JOB 5 — Save logs & summary
+  # ═══════════════════════════════════════════
+  save-logs:
+    name: 📊 Save Logs
+    runs-on: ubuntu-latest
+    needs: [create-reels]
+    if: always()
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download reels artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: output-reels
+          path: output_reels/
+        continue-on-error: true
+
+      - name: Generate run summary
+        run: |
+          echo "# 🤖 AI YouTube Automation Run Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Run Time:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## 🎬 Created Reels" >> $GITHUB_STEP_SUMMARY
+          if ls output_reels/reel_*.mp4 2>/dev/null | head -5; then
+            for f in output_reels/reel_*.mp4; do
+              size=$(du -sh "$f" 2>/dev/null | cut -f1)
+              echo "- \`$(basename $f)\` ($size)" >> $GITHUB_STEP_SUMMARY
+            done
+          else
+            echo "No reels created in this run." >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📋 Analysis Files" >> $GITHUB_STEP_SUMMARY
+          for f in output_reels/*.json; do
+            [ -f "$f" ] && echo "- \`$(basename $f)\`" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: Commit automation log to repo
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Write a simple run log
+          mkdir -p logs
+          echo "[$(date -u '+%Y-%m-%d %H:%M UTC')] Run completed. Trigger: ${{ github.event_name }}" \
+            >> logs/automation_runs.log
+
+          git add logs/
+          git commit -m "📊 Log: automation run $(date -u '+%Y-%m-%d')" || echo "Nothing to commit"
+          git push || echo "Push failed (no changes)"
