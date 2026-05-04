@@ -1,0 +1,21 @@
+# Core dependencies
+yt-dlp>=2024.1.1
+moviepy>=1.0.3
+pillow>=10.0.0
+
+# Google API for YouTube upload
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=1.0.0
+
+# HTTP requests
+requests>=2.31.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Scheduling
+schedule>=1.2.0
+
+# Google Generative AI (Gemini)
+google-generativeai>=0.3.0
