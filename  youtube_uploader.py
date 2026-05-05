@@ -4,6 +4,7 @@ YouTube Uploader Module
 import os
 import sys
 import pickle
+import tempfile
 from pathlib import Path
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -42,8 +43,14 @@ class YouTubeUploader:
                         YOUTUBE_CLIENT_SECRETS_FILE, [YOUTUBE_UPLOAD_SCOPE])
                     self.credentials = flow.run_local_server(port=0)
 
-                with open(TOKEN_FILE, 'wb') as token:
-                    pickle.dump(self.credentials, token)
+                fd, temp_path = tempfile.mkstemp(dir='.')
+                try:
+                    with os.fdopen(fd, 'wb') as tmp:
+                        pickle.dump(self.credentials, tmp)
+                    os.replace(temp_path, TOKEN_FILE)
+                except Exception:
+                    os.unlink(temp_path)
+                    raise
 
             self.youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION,
                                  credentials=self.credentials)
@@ -105,7 +112,19 @@ class YouTubeUploader:
 
             tags = [t.lstrip('#') for t in analysis.get("tags", [])]
             tags.extend(hot_words)
-            tags = list(set(tags))[:15]
+            # Remove duplicates and enforce YouTube's 500 char total limit
+            unique_tags = []
+            seen = set()
+            total_chars = 0
+            for tag in tags:
+                tag = tag.strip()
+                if tag and tag.lower() not in seen:
+                    # YouTube limits: 500 chars total, 30 chars per tag
+                    if len(tag) <= 30 and total_chars + len(tag) + 1 <= 500:
+                        unique_tags.append(tag)
+                        seen.add(tag.lower())
+                        total_chars += len(tag) + 1  # +1 for separator
+            tags = unique_tags
 
             main_topic = analysis.get("main_topic", "Entertainment")
             category_id = VIDEO_CATEGORIES.get(main_topic, 24)

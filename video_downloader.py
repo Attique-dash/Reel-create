@@ -30,11 +30,16 @@ class VideoDownloader:
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=True)
                 video_id = info.get("id", "")
+                expected_exts = (".mp4", ".mkv", ".webm", ".mov", ".avi")
                 for f in os.listdir(self.download_folder):
-                    if video_id in f and f.endswith((".mp4", ".mkv", ".webm")):
-                        full = os.path.join(self.download_folder, f)
-                        print(f"[Downloader] Saved → {full}")
-                        return full
+                    # Check file ends with _<video_id>.<ext> to avoid false matches
+                    # Format: %(title).50s_%(id)s.%(ext)s
+                    if f.endswith(expected_exts):
+                        name_part = f.rsplit(".", 1)[0]  # Remove extension
+                        if name_part.endswith(f"_{video_id}"):
+                            full = os.path.join(self.download_folder, f)
+                            print(f"[Downloader] Saved → {full}")
+                            return full
                 print("[Downloader] Could not locate downloaded file.")
                 return None
         except Exception as e:

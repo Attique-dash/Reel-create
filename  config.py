@@ -34,4 +34,21 @@ VIDEO_CATEGORIES = {
 }
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
-DAILY_UPLOAD_TIME = os.getenv("DAILY_UPLOAD_TIME", "09:00")
+
+# Validate and normalize DAILY_UPLOAD_TIME to strict "HH:MM" format
+_raw_time = os.getenv("DAILY_UPLOAD_TIME", "09:00")
+DAILY_UPLOAD_TIME = "09:00"  # default fallback
+if _raw_time:
+    # Remove common suffixes like " AM", " PM"
+    clean_time = _raw_time.strip().upper().replace(" AM", "").replace(" PM", "")
+    parts = clean_time.split(":")
+    if len(parts) >= 2:
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1])
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                DAILY_UPLOAD_TIME = f"{hour:02d}:{minute:02d}"
+        except ValueError:
+            pass
+    if DAILY_UPLOAD_TIME == "09:00" and _raw_time != "09:00":
+        print(f"[config] Warning: Invalid DAILY_UPLOAD_TIME '{_raw_time}', using default '09:00'")

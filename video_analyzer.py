@@ -18,6 +18,30 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 class VideoAnalyzer:
     def __init__(self):
         self.client = client
+        self._check_ffmpeg_available()
+
+    def _check_ffmpeg_available(self):
+        """Check that ffmpeg and ffprobe are available on system."""
+        missing = []
+        for tool in ["ffmpeg", "ffprobe"]:
+            try:
+                result = subprocess.run(
+                    [tool, "-version"],
+                    capture_output=True,
+                    timeout=5
+                )
+                if result.returncode != 0:
+                    missing.append(tool)
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                missing.append(tool)
+        if missing:
+            raise RuntimeError(
+                f"Missing required tools: {', '.join(missing)}. "
+                f"Please install ffmpeg (includes ffprobe). "
+                f"Ubuntu/Debian: sudo apt-get install ffmpeg. "
+                f"macOS: brew install ffmpeg. "
+                f"Windows: download from ffmpeg.org"
+            )
 
     def extract_audio(self, video_path: str, output_audio_path: str) -> bool:
         try:
@@ -30,18 +54,26 @@ class VideoAnalyzer:
             return False
 
     def transcribe_audio(self, audio_path: str) -> str:
+        audio_file = None
         try:
             audio_file = self.client.files.upload(
                 path=audio_path,
                 config={"mime_type": "audio/mpeg"}
             )
+            file_info = None
             for _ in range(10):
                 file_info = self.client.files.get(name=audio_file.name)
                 if file_info.state.name == "ACTIVE":
                     break
                 if file_info.state.name == "FAILED":
+                    print("[transcribe_audio] File upload failed on server")
                     return ""
                 time.sleep(2)
+            else:
+                # Loop exhausted without break (still not ACTIVE)
+                state = file_info.state.name if file_info else "UNKNOWN"
+                print(f"[transcribe_audio] Timeout waiting for file (state: {state})")
+                return ""
             prompt = "Transcribe this audio. Return ONLY the transcribed text."
             response = self.client.models.generate_content(
                 model=GEMINI_MODEL, contents=[prompt, audio_file])
@@ -49,6 +81,12 @@ class VideoAnalyzer:
         except Exception as e:
             print(f"[transcribe_audio] Error: {e}")
             return ""
+        finally:
+            if audio_file:
+                try:
+                    self.client.files.delete(name=audio_file.name)
+                except Exception as e:
+                    print(f"[transcribe_audio] Failed to delete uploaded file: {e}")
 
     def extract_frames(self, video_path: str, num_frames: int = 5) -> List[str]:
         frame_paths = []

@@ -293,8 +293,8 @@ jobs:
     name: 📤 Upload to YouTube
     runs-on: ubuntu-latest
     needs: create-reels
-    # Only upload if YouTube credentials secret exists
-    if: ${{ secrets.YOUTUBE_CLIENT_SECRETS_JSON != '' && secrets.YOUTUBE_TOKEN_PICKLE_B64 != '' }}
+    # Only upload if YouTube credentials secret exists (check via env vars)
+    if: ${{ env.YOUTUBE_CLIENT_SECRETS_JSON != '' && env.YOUTUBE_TOKEN_PICKLE_B64 != '' }}
 
     steps:
       - name: Checkout repository

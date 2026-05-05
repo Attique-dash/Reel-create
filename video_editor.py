@@ -43,23 +43,61 @@ class VideoEditor:
             print(f"[get_video_info] Error: {e}")
             return {"duration": 0, "width": 0, "height": 0}
 
-    def find_segments(self, video_path: str, num_segments: int = 3) -> List[Tuple[float, float]]:
+    def find_segments(self, video_path: str, num_segments: int = 3,
+                        analysis: Optional[Dict] = None) -> List[Tuple[float, float]]:
         try:
             info = self.get_video_info(video_path)
             duration = info["duration"]
             if duration == 0:
                 return [(0, 15)]
+
             seg_dur = random.randint(TARGET_REEL_DURATION_MIN, TARGET_REEL_DURATION_MAX)
             segments = []
-            for i in range(num_segments):
-                center = duration * (i + 1) / (num_segments + 1)
-                start = max(0, center - seg_dur / 2)
-                end = min(duration, start + seg_dur)
-                segments.append((start, end))
+
+            # Use AI-detected key_moments if available
+            key_moments = analysis.get("key_moments") if analysis else None
+            if key_moments and isinstance(key_moments, list) and len(key_moments) >= num_segments:
+                # Parse key moment timestamps (expected format: "MM:SS description" or seconds)
+                for i, moment in enumerate(key_moments[:num_segments]):
+                    center = self._parse_timestamp(moment, duration)
+                    start = max(0, center - seg_dur / 2)
+                    end = min(duration, start + seg_dur)
+                    segments.append((start, end))
+                    print(f"[find_segments] Reel {i+1} at key moment: {start:.1f}s → {end:.1f}s")
+            else:
+                # Fallback to evenly distributed segments
+                for i in range(num_segments):
+                    center = duration * (i + 1) / (num_segments + 1)
+                    start = max(0, center - seg_dur / 2)
+                    end = min(duration, start + seg_dur)
+                    segments.append((start, end))
+
             return segments
         except Exception as e:
             print(f"[find_segments] Error: {e}")
             return [(0, 15)]
+
+    def _parse_timestamp(self, moment, duration: float) -> float:
+        """Parse a key moment string to seconds."""
+        if isinstance(moment, (int, float)):
+            return float(moment)
+        if isinstance(moment, str):
+            # Try to extract leading timestamp like "1:30" or "90"
+            parts = moment.split()
+            if parts:
+                time_part = parts[0]
+                try:
+                    if ":" in time_part:
+                        # MM:SS format
+                        mm, ss = time_part.split(":", 1)
+                        return min(float(mm) * 60 + float(ss), duration * 0.9)
+                    else:
+                        # Plain seconds
+                        return min(float(time_part), duration * 0.9)
+                except ValueError:
+                    pass
+        # Default to middle if parsing fails
+        return duration / 2
 
     def create_reel_ffmpeg(self, video_path: str, start: float, end: float,
                            output_path: str, title: str = "") -> bool:
@@ -69,8 +107,9 @@ class VideoEditor:
 
             # Build video filter: crop to 9:16, scale to 1080x1920
             # Then optionally draw title text on the video
+            # Use min() to handle portrait/square inputs gracefully
             vf = (
-                "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,"
+                "crop='min(ih*9/16,iw)':ih:(iw-min(ih*9/16,iw))/2:0,"
                 f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,"
                 f"pad={VIDEO_WIDTH}:{VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black"
             )
@@ -82,8 +121,21 @@ class VideoEditor:
                               .replace("'", "\\'")
                               .replace(":", "\\:")
                               .replace(",", "\\,"))
+                # Use common Ubuntu font paths, fallback to default if not found
+                font_paths = [
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+                    "/System/Library/Fonts/Helvetica.ttc",  # macOS
+                    "C:/Windows/Fonts/arial.ttf",  # Windows
+                ]
+                fontfile = ""
+                for fp in font_paths:
+                    if os.path.exists(fp):
+                        fontfile = f"fontfile='{fp}':"
+                        break
                 vf += (
-                    f",drawtext=text='{safe_title}'"
+                    f",drawtext={fontfile}text='{safe_title}'"
                     f":fontsize=60:fontcolor=white"
                     f":x=(w-text_w)/2:y=100"
                     f":shadowcolor=black:shadowx=3:shadowy=3"
@@ -122,7 +174,7 @@ class VideoEditor:
 
     def create_preview_reel(self, video_path: str, analysis: Dict,
                             output_name: Optional[str] = None) -> Optional[str]:
-        segments = self.find_segments(video_path, num_segments=1)
+        segments = self.find_segments(video_path, num_segments=1, analysis=analysis)
         if not segments:
             return None
         start, end = segments[0]
@@ -143,7 +195,7 @@ class VideoEditor:
 
     def create_reel(self, video_path: str, analysis: Dict,
                     output_name: Optional[str] = None) -> Optional[str]:
-        segments = self.find_segments(video_path, num_segments=1)
+        segments = self.find_segments(video_path, num_segments=1, analysis=analysis)
         if not segments:
             return None
         start, end = segments[0]
@@ -161,7 +213,7 @@ class VideoEditor:
     def create_multiple_reels(self, video_path: str, analysis: Dict,
                                max_reels: int = 3) -> List[str]:
         reels = []
-        segments = self.find_segments(video_path, num_segments=max_reels)
+        segments = self.find_segments(video_path, num_segments=max_reels, analysis=analysis)
         base_name = Path(video_path).stem[:30]
         titles = analysis.get("suggested_titles", ["Amazing!", "Watch This!", "Viral Moment!"])
 

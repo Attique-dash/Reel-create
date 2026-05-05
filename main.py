@@ -4,6 +4,9 @@ AI YouTube Automation - Main Entry Point
 import os
 import sys
 import json
+import glob
+import time
+import hashlib
 import argparse
 from pathlib import Path
 from typing import Optional, List
@@ -16,15 +19,62 @@ from scheduler import AutomationScheduler, TaskLogger, logged_task
 
 
 class AIYouTubeAutomation:
+    PROCESSED_LOG = os.path.join(OUTPUT_FOLDER, ".processed_videos.json")
+
     def __init__(self):
         self.analyzer = VideoAnalyzer()
         self.editor = VideoEditor()
         self.downloader = VideoDownloader()
         self.uploader = None
         self.scheduler = AutomationScheduler()
+        self._processed_videos = self._load_processed_log()
         os.makedirs(VIDEO_SOURCE_FOLDER, exist_ok=True)
         os.makedirs(OUTPUT_FOLDER, exist_ok=True)
         os.makedirs(PREVIEW_FOLDER, exist_ok=True)
+
+    def _load_processed_log(self) -> dict:
+        """Load the log of processed videos to avoid duplicates."""
+        if os.path.exists(self.PROCESSED_LOG):
+            try:
+                with open(self.PROCESSED_LOG, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    def _save_processed_log(self):
+        """Save the processed videos log."""
+        try:
+            with open(self.PROCESSED_LOG, "w") as f:
+                json.dump(self._processed_videos, f, indent=2)
+        except Exception as e:
+            print(f"[Warning] Could not save processed log: {e}")
+
+    def _get_video_hash(self, video_path: str) -> str:
+        """Generate a unique hash for a video file."""
+        import hashlib
+        stat = os.stat(video_path)
+        # Use file path, size, and mtime for uniqueness
+        hash_input = f"{video_path}:{stat.st_size}:{stat.st_mtime}"
+        return hashlib.md5(hash_input.encode()).hexdigest()[:16]
+
+    def is_video_processed(self, video_path: str) -> bool:
+        """Check if a video has already been processed."""
+        if not os.path.exists(video_path):
+            return False
+        video_hash = self._get_video_hash(video_path)
+        return video_hash in self._processed_videos
+
+    def mark_video_processed(self, video_path: str, reels: list = None, uploaded: bool = False):
+        """Mark a video as processed with metadata."""
+        video_hash = self._get_video_hash(video_path)
+        self._processed_videos[video_hash] = {
+            "path": video_path,
+            "processed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "reels": reels or [],
+            "uploaded": uploaded
+        }
+        self._save_processed_log()
 
     def check_setup(self, need_youtube: bool = False) -> bool:
         issues = []
@@ -163,13 +213,34 @@ Commands:
             if not args.video:
                 print("❌ Provide --video path")
                 return
-            analysis_path = args.video.rsplit(".", 1)[0] + "_analysis.json"
+            # Look for analysis JSON - reels have different naming than source videos
+            analysis = None
+            video_stem = Path(args.video).stem
+            # Try exact match first (consistent 40-char truncation used by run command)
+            truncated_stem = video_stem[:40]
+            analysis_path = os.path.join(OUTPUT_FOLDER, f"{truncated_stem}_analysis.json")
+            if not os.path.exists(analysis_path):
+                # Try non-truncated version as fallback
+                analysis_path = os.path.join(OUTPUT_FOLDER, f"{video_stem}_analysis.json")
             if os.path.exists(analysis_path):
                 with open(analysis_path) as f:
                     analysis = json.load(f)
             else:
+                # Try to find any analysis JSON that might match this reel
+                # Reels are named like: reel_<source>_part1.mp4 or reel_<source>_<start>_<end>.mp4
+                json_files = glob.glob(os.path.join(OUTPUT_FOLDER, "*_analysis.json"))
+                for json_file in json_files:
+                    try:
+                        with open(json_file) as f:
+                            candidate = json.load(f)
+                        # Use first available analysis if no direct match
+                        analysis = candidate
+                        break
+                    except Exception:
+                        continue
+            if not analysis:
                 analysis = {
-                    "suggested_titles": [Path(args.video).stem],
+                    "suggested_titles": [video_stem],
                     "suggested_description": "Check this out!",
                     "tags": ["#shorts", "#viral"],
                     "hot_words": ["trending"],
@@ -182,16 +253,29 @@ Commands:
             if not videos:
                 print("No videos in downloaded_videos/ folder.")
                 return
-            print(f"\n📁 Found {len(videos)} videos")
-            for video in videos:
+            # Filter out already processed videos
+            new_videos = [v for v in videos if not automation.is_video_processed(v)]
+            skipped = len(videos) - len(new_videos)
+            if skipped:
+                print(f"\n📁 Found {len(videos)} videos ({skipped} already processed, {len(new_videos)} new)")
+            else:
+                print(f"\n📁 Found {len(videos)} videos")
+            if not new_videos:
+                print("✅ All videos already processed. Nothing to do.")
+                return
+            for video in new_videos:
                 analysis = automation.analyze_video(video)
                 analysis_file = os.path.join(
                     OUTPUT_FOLDER, f"{Path(video).stem[:40]}_analysis.json")
                 with open(analysis_file, "w") as f:
                     json.dump(analysis, f, indent=2)
                 reels = automation.create_reels(video, analysis)
+                uploaded = False
                 for reel in reels:
-                    automation.upload_to_youtube(reel, analysis, args.privacy)
+                    result = automation.upload_to_youtube(reel, analysis, args.privacy)
+                    if result:
+                        uploaded = True
+                automation.mark_video_processed(video, reels, uploaded)
 
         elif args.command == "schedule":
             def daily_job():
@@ -199,11 +283,21 @@ Commands:
                 if not videos:
                     automation.download_trending("trending viral shorts", 2)
                     videos = automation.downloader.list_downloaded_videos()
-                for video in videos:
+                # Filter out already processed videos
+                new_videos = [v for v in videos if not automation.is_video_processed(v)]
+                if not new_videos:
+                    print("[Daily Job] All videos already processed. Nothing to do.")
+                    return
+                print(f"[Daily Job] Processing {len(new_videos)} new videos")
+                for video in new_videos:
                     analysis = automation.analyze_video(video)
                     reels = automation.create_reels(video, analysis)
+                    uploaded = False
                     for reel in reels:
-                        automation.upload_to_youtube(reel, analysis, "private")
+                        result = automation.upload_to_youtube(reel, analysis, "private")
+                        if result:
+                            uploaded = True
+                    automation.mark_video_processed(video, reels, uploaded)
 
             print(f"\n⏰ Scheduling daily run at {args.time}")
             automation.scheduler.add_daily_job(daily_job, args.time)
