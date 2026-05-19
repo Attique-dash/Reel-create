@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont
 
 from config import (
-    VIDEO_WIDTH, VIDEO_HEIGHT, TTS_VOICE, TIPS_OUTPUT_FOLDER,
+    VIDEO_WIDTH, VIDEO_HEIGHT, TTS_VOICE, QUEUE_OUTPUT_FOLDER,
     TIP_BRAND_COLOR, CHANNEL_NAME, CHANNEL_CTA, TIP_XFADE_DURATION,
     BACKGROUND_MUSIC_PATH, CHANNEL_LOGO_PATH, TIP_BG_COLOR, TIP_TEXT_COLOR,
     TIP_SLIDE_DURATIONS, TIP_TOTAL_DURATION, TIP_FPS,
@@ -76,7 +76,7 @@ class TipVideoBuilder:
         self.text_color = TIP_TEXT_COLOR
         self.slide_durations = list(TIP_SLIDE_DURATIONS)
         self.xfade = TIP_XFADE_DURATION
-        Path(TIPS_OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
+        Path(QUEUE_OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
 
     def _sections_from_tip(self, tip: Dict) -> List[Dict]:
         """Five slides: hook + 3 steps + CTA. Voice/caption word-for-word."""
@@ -395,7 +395,7 @@ class TipVideoBuilder:
         total_slides = len(sections)
 
         if output_path is None:
-            output_path = os.path.join(TIPS_OUTPUT_FOLDER, f"tip_{tip.get('generated_on', 'out')}.mp4".replace(":", ""))
+            output_path = os.path.join(QUEUE_OUTPUT_FOLDER, f"tip_{tip.get('generated_on', 'out')}.mp4".replace(":", ""))
 
         work = tempfile.mkdtemp(prefix="tip_28_")
         try:

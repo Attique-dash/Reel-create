@@ -4,27 +4,20 @@
 
 | Item | Where you set it | Used by this project? |
 |------|------------------|------------------------|
-| **Channel name** | [YouTube Studio](https://studio.youtube.com) → Customization → Basic info | Shown **on the video slides** via `CHANNEL_NAME` in `.env` |
-| **Channel bio / description** | Studio → Customization → Basic info | **You** write manually (not uploaded by script) |
-| **Profile picture (logo)** | Studio → Customization → Branding | **You** upload in Studio; optional copy on slides via `assets/channel_logo.png` |
-| **Banner** | Studio → Customization → Branding | **You** upload manually |
-| **Video title, description, tags** | Generated per tip | **Yes** — on each upload |
-| **Thumbnail** | Studio after upload, or API | Optional later — not auto-set yet |
+| **Channel name** | [YouTube Studio](https://studio.youtube.com) → Customization → Basic info | Shown **on video slides** via `CHANNEL_NAME` in `.env` |
+| **Channel bio / description** | Studio → Customization → Basic info | **You** write manually |
+| **Profile picture (logo)** | Studio → Customization → Branding | Optional on slides: `assets/channel_logo.png` |
+| **Video title, description, tags** | Generated per topic | **Yes** — on each upload |
 
-You do **not** enter your channel URL into the code. When you sign in with OAuth, uploads go to **the Google account you authorize**.
+OAuth uploads go to **the Google account you authorize** (no channel URL in code).
 
 ---
 
 ## Step 1 — Brand your channel (one time)
 
-1. Open [YouTube Studio](https://studio.youtube.com).
-2. **Customization → Basic info**
-   - Channel name: e.g. `Daily Productivity Tips`
-   - Description: e.g. `Daily 30-second tips on AI, email, and focus. New Short every day.`
-3. **Customization → Branding**
-   - Upload **profile picture** (800×800 recommended).
-   - Upload **banner** (2560×1440).
-4. Match your `.env` so slides match the channel:
+1. [YouTube Studio](https://studio.youtube.com) → Customization.
+2. Set channel name, description, profile picture, banner.
+3. Match `.env`:
 
 ```env
 CHANNEL_NAME=Daily Productivity Tips
@@ -32,90 +25,49 @@ CHANNEL_CTA=Follow for daily tips
 TIP_BRAND_COLOR=#f97316
 ```
 
-5. (Optional) Save your logo as `assets/channel_logo.png` (square PNG, ~500×500).
-
 ---
 
 ## Step 2 — Google Cloud & OAuth (one time)
 
-1. [Google Cloud Console](https://console.cloud.google.com/) → create project.
-2. Enable **YouTube Data API v3**.
-3. **Credentials → OAuth client ID → Desktop app** → download JSON → save as `client_secrets.json` in the project root.
-4. On your Mac:
-
-```bash
-cd /Users/apple/Desktop/AI-Automation
-source venv/bin/activate
-python main.py test
-```
-
-5. First upload opens a browser — sign in with the **same Google account as your YouTube channel**.
-6. Token saves to `youtube_token.pickle` (keep private).
+1. [Google Cloud Console](https://console.cloud.google.com/) → enable **YouTube Data API v3**.
+2. OAuth client ID → **Desktop app** → save as `client_secrets.json`.
+3. `python main.py test` then first upload to sign in → `youtube_token.pickle`.
 
 ---
 
-## Step 3 — Create an improved Short locally
+## Step 3 — Create a Short locally
+
+Edit `content/video_topics.txt`, then:
 
 ```bash
-pip install -r requirements.txt
-python main.py daily-tip --no-upload
+python main.py queue-video --no-upload
 ```
 
-Watch: `output_reels/tips/tip_YYYY-MM-DD.mp4`
-
-Optional background music: add royalty-free `assets/background_music.mp3` (low volume mixed automatically).
+Output: `output_reels/queue/video_YYYY-MM-DD_*.mp4`
 
 ---
 
-## Step 4 — Upload to your channel
-
-**Private first (recommended):**
+## Step 4 — Upload
 
 ```bash
-python main.py daily-tip --upload --privacy private
+python main.py queue-video --upload --privacy private
+# or upload an existing file:
+python main.py upload --video "./output_reels/queue/video_2026-05-19_2010_abc.mp4" --privacy private
 ```
-
-**When ready for everyone:**
-
-```bash
-python main.py daily-tip --upload --privacy public
-```
-
-**Upload an existing file:**
-
-```bash
-python main.py upload --video "./output_reels/tips/tip_2026-05-19.mp4" --privacy private
-```
-
-After upload, the terminal prints: `https://youtube.com/shorts/VIDEO_ID`
 
 ---
 
-## Step 5 — GitHub Actions (daily auto-upload)
+## Step 5 — GitHub Actions (2 Shorts per day)
 
-1. Repo → **Settings → Secrets**:
-   - `GEMINI_API_KEY`
-   - `YOUTUBE_CLIENT_SECRETS_JSON` — paste full `client_secrets.json` content
-   - `YOUTUBE_TOKEN_PICKLE_B64` — from Mac:
+Workflow: **Actions → Content Queue Shorts**
+
+Secrets: `GEMINI_API_KEY`, `YOUTUBE_CLIENT_SECRETS_JSON`, `YOUTUBE_TOKEN_PICKLE_B64`
 
 ```bash
 base64 -i youtube_token.pickle | pbcopy
 ```
 
-2. Run workflow: **Actions → Daily Tip Short (Idea 2) → Run workflow** → set `upload` = `true`.
-
----
-
-## Sharing your channel URL
-
-Your channel URL looks like:
-
-- `https://www.youtube.com/@YourChannelHandle`
-- or `https://www.youtube.com/channel/UCxxxxxxxx`
-
-You **do not** paste this into the upload code. OAuth links the app to that channel automatically.
-
-To align slide branding with your channel, only set `CHANNEL_NAME` and optional logo in `.env`.
+Runs at 09:00 and 21:00 UTC by default (12 hours apart).
 
 ---
 
@@ -123,7 +75,6 @@ To align slide branding with your channel, only set `CHANNEL_NAME` and optional 
 
 | Problem | Fix |
 |---------|-----|
-| Upload goes to wrong account | Delete `youtube_token.pickle`, re-run upload, pick correct Google account |
-| Quota / Gemini errors | Tips use built-in scripts; fix API key/billing for AI-written tips |
-| No background music | Add `assets/background_music.mp3` (royalty-free) |
-| Video too short | Increase `TIP_SECONDS_PER_SLIDE=7` in `.env` |
+| Wrong YouTube account | Delete `youtube_token.pickle`, re-upload |
+| Same topic repeated | Check `content/.content_queue_state.json` or `queue-status --reset-queue` |
+| Gemini errors | Fallback script still runs; check API key |

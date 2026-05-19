@@ -9,11 +9,11 @@ from typing import Dict, List, Optional
 
 from google import genai
 
-from config import GEMINI_API_KEY, GEMINI_MODEL, TIP_NICHE, TIPS_OUTPUT_FOLDER, CHANNEL_NAME
+from config import GEMINI_API_KEY, GEMINI_MODEL, TIP_NICHE, QUEUE_OUTPUT_FOLDER, CHANNEL_NAME
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-TIP_HISTORY_FILE = Path(TIPS_OUTPUT_FOLDER) / ".tip_history.json"
+TIP_HISTORY_FILE = Path(QUEUE_OUTPUT_FOLDER) / ".tip_history.json"
 
 # Emojis: Hook 📧 | Step1 📤 | Step2 📂 | Step3 ⏱️ | CTA 💾
 SLIDE_EMOJIS = ["📧", "📤", "📂", "⏱️", "💾"]
@@ -141,7 +141,7 @@ class TipGenerator:
     def __init__(self, niche: Optional[str] = None):
         self.niche = niche or TIP_NICHE
         self.client = client
-        Path(TIPS_OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
+        Path(QUEUE_OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
 
     def _load_history(self) -> List[str]:
         if not TIP_HISTORY_FILE.exists():
@@ -173,18 +173,37 @@ class TipGenerator:
                 text = text.lstrip()[4:]
         return json.loads(text.strip())
 
-    def _fallback_tip(self) -> Dict:
+    def _fallback_tip(self, topic: Optional[str] = None) -> Dict:
         day_index = date.today().toordinal() % len(FALLBACK_TIPS)
         tip = dict(FALLBACK_TIPS[day_index])
         tip["source"] = "fallback"
         tip["niche"] = self.niche
+        if topic:
+            tip["hook"] = topic[:80]
+            tip["hook_voice"] = topic[:120]
+            tip["tip_title"] = topic[:50]
+            tip["queue_topic"] = topic
+            tip["suggested_titles"] = [f"{topic[:55]} #Shorts"]
         return tip
 
-    def generate(self, avoid_titles: Optional[List[str]] = None) -> Dict:
+    def generate(
+        self,
+        avoid_titles: Optional[List[str]] = None,
+        topic: Optional[str] = None,
+    ) -> Dict:
         avoid = avoid_titles if avoid_titles is not None else self._load_history()
         avoid_str = ", ".join(avoid[-15:]) if avoid else "none"
 
-        prompt = f"""Create ONE English YouTube Short for niche: {self.niche}
+        if topic:
+            focus = f"""TOPIC (center the entire Short on this — hook must mention it):
+"{topic}"
+Niche context: {self.niche}
+The 3 steps should directly answer or break down this topic (lists, tips, or steps as appropriate)."""
+        else:
+            focus = f"Niche: {self.niche}"
+
+        prompt = f"""Create ONE English YouTube Short.
+{focus}
 
 Return ONLY valid JSON (no markdown).
 
@@ -225,6 +244,8 @@ RULES:
             tip = self._parse_response(response.text or "")
             tip["source"] = "gemini"
             tip["niche"] = self.niche
+            if topic:
+                tip["queue_topic"] = topic
             tip["generated_on"] = date.today().isoformat()
             if not tip.get("on_screen_lines") and tip.get("steps"):
                 tip["on_screen_lines"] = [s.get("line", "") for s in tip["steps"][:3]]
@@ -232,13 +253,13 @@ RULES:
             return tip
         except Exception as e:
             print(f"[TipGenerator] Gemini failed ({e}), using fallback tip")
-            tip = self._fallback_tip()
+            tip = self._fallback_tip(topic=topic)
             tip["generated_on"] = date.today().isoformat()
             self._save_history(tip)
             return tip
 
     def save_tip_json(self, tip: Dict, output_dir: Optional[str] = None) -> str:
-        folder = Path(output_dir or TIPS_OUTPUT_FOLDER)
+        folder = Path(output_dir or QUEUE_OUTPUT_FOLDER)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"tip_{date.today().isoformat()}_{self._tip_hash(tip)}.json"
         with open(path, "w", encoding="utf-8") as f:

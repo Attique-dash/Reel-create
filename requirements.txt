@@ -1,26 +1,19 @@
-# Core dependencies
-yt-dlp>=2024.1.1
-moviepy>=1.0.3
+# Video slides
 pillow>=10.0.0
-numpy>=1.24.0
-pydub>=0.25.0
 
-# Google API for YouTube upload
+# YouTube upload
 google-api-python-client>=2.100.0
 google-auth-httplib2>=0.1.0
 google-auth-oauthlib>=1.0.0
 
-# HTTP requests
-requests>=2.31.0
-
-# Environment variables
+# Config
 python-dotenv>=1.0.0
 
-# Scheduling
+# Local scheduler (2 videos/day)
 schedule>=1.2.0
 
-# Google Generative AI (Gemini)
+# Gemini scripts
 google-genai>=1.0.0
 
-# Idea 2: English text-to-speech for daily tip Shorts
+# English TTS
 edge-tts>=6.1.0

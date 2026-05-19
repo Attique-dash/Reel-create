@@ -8,7 +8,7 @@ import threading
 import functools
 from datetime import datetime
 from typing import Callable
-from config import DAILY_UPLOAD_TIME
+from config import UPLOAD_TIME_1
 
 
 class AutomationScheduler:
@@ -17,7 +17,7 @@ class AutomationScheduler:
         self.running = False
         self.scheduler_thread = None
 
-    def add_daily_job(self, job_func: Callable, time_str: str = DAILY_UPLOAD_TIME,
+    def add_daily_job(self, job_func: Callable, time_str: str = UPLOAD_TIME_1,
                       *args, **kwargs):
         job = schedule.every().day.at(time_str).do(job_func, *args, **kwargs)
         self.jobs.append(job)

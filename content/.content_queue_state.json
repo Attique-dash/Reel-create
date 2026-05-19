@@ -1,0 +1,20 @@
+{
+  "used_indices": [
+    21,
+    24
+  ],
+  "history": [
+    {
+      "index": 21,
+      "topic": "How to network when you hate networking",
+      "video_path": "./output_reels/queue/video_2026-05-19_2010_2c28a260.mp4",
+      "used_at": "2026-05-19 20:11:55"
+    },
+    {
+      "index": 24,
+      "topic": "5 habits of people who get promoted quickly",
+      "video_path": "./output_reels/queue/video_2026-05-19_2016_9f73cb6b.mp4",
+      "used_at": "2026-05-19 20:17:00"
+    }
+  ]
+}
