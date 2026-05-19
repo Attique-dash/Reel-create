@@ -21,3 +21,6 @@ schedule>=1.2.0
 
 # Google Generative AI (Gemini)
 google-genai>=1.0.0
+
+# Idea 2: English text-to-speech for daily tip Shorts
+edge-tts>=6.1.0

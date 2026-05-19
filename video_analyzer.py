@@ -57,7 +57,7 @@ class VideoAnalyzer:
         audio_file = None
         try:
             audio_file = self.client.files.upload(
-                path=audio_path,
+                file=audio_path,
                 config={"mime_type": "audio/mpeg"}
             )
             file_info = None
@@ -130,11 +130,18 @@ class VideoAnalyzer:
                 except OSError:
                     pass
 
-            prompt = f"""Analyze this video and return ONLY valid JSON, no markdown, no backticks:
+            prompt = f"""Analyze this video for YouTube Shorts / reels. Return ONLY valid JSON (no markdown).
+
+Rules:
+- "hot_words": 5-10 trending keywords or phrases from the video (hooks, emotions, topics).
+- "key_moments": exactly 3 strings, each "MM:SS short label" for the best clip start times
+  (spread across the video; use transcript + visuals). Example: "0:45 shocking reveal".
+- "suggested_titles": catchy Shorts titles using hot_words where natural.
+
 {{
-  "hot_words": ["keyword1", "keyword2", "keyword3"],
+  "hot_words": ["keyword1", "keyword2"],
   "main_topic": "Entertainment",
-  "key_moments": ["moment1", "moment2"],
+  "key_moments": ["0:15 hook", "1:02 peak moment", "2:30 punchline"],
   "sentiment": "exciting",
   "target_audience": "general audience",
   "virality_score": 7,
@@ -142,7 +149,7 @@ class VideoAnalyzer:
   "suggested_description": "Short description here",
   "tags": ["#tag1", "#tag2"]
 }}
-Audio transcript: {transcript[:500] if transcript else "Not available"}"""
+Audio transcript: {transcript[:1500] if transcript else "Not available"}"""
 
             content_parts = [prompt]
             for frame_path in frames:
@@ -176,7 +183,7 @@ Audio transcript: {transcript[:500] if transcript else "Not available"}"""
         return {
             "hot_words": ["trending", "viral", "amazing"],
             "main_topic": "Entertainment",
-            "key_moments": ["opening", "climax", "ending"],
+            "key_moments": ["0:30 hook", "3:00 peak", "6:00 finale"],
             "sentiment": "exciting",
             "target_audience": "general audience",
             "virality_score": 7,

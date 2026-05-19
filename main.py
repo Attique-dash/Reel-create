@@ -11,7 +11,10 @@ import argparse
 from pathlib import Path
 from typing import Optional, List
 
-from config import VIDEO_SOURCE_FOLDER, OUTPUT_FOLDER, GEMINI_API_KEY
+from config import (
+    VIDEO_SOURCE_FOLDER, OUTPUT_FOLDER, GEMINI_API_KEY, AUTO_UPLOAD,
+    TIP_NICHE, TIPS_OUTPUT_FOLDER, TTS_VOICE, CHANNEL_NAME,
+)
 from video_analyzer import VideoAnalyzer
 from video_editor import VideoEditor, PREVIEW_FOLDER
 from video_downloader import VideoDownloader
@@ -122,6 +125,58 @@ class AIYouTubeAutomation:
         print(f"✅ Created {len(reels)} reels")
         return reels
 
+    def process_local_videos(self, upload: bool = False, privacy: str = "private",
+                             max_reels: int = 3) -> int:
+        """Analyze videos in VIDEO_SOURCE_FOLDER, create reels, optionally upload."""
+        videos = self.downloader.list_downloaded_videos()
+        if not videos:
+            print(f"\n📁 No videos in {VIDEO_SOURCE_FOLDER}/")
+            print(f"   Drop .mp4 files there, or run: python main.py download")
+            return 0
+
+        new_videos = [v for v in videos if not self.is_video_processed(v)]
+        skipped = len(videos) - len(new_videos)
+        if skipped:
+            print(f"\n📁 {len(videos)} videos ({skipped} already done, {len(new_videos)} new)")
+        else:
+            print(f"\n📁 Processing {len(videos)} video(s) from {VIDEO_SOURCE_FOLDER}/")
+
+        if not new_videos:
+            print("✅ All videos already processed.")
+            return 0
+
+        processed = 0
+        for video in new_videos:
+            analysis = self.analyze_video(video)
+            analysis_file = os.path.join(
+                OUTPUT_FOLDER, f"{Path(video).stem[:40]}_analysis.json")
+            with open(analysis_file, "w") as f:
+                json.dump(analysis, f, indent=2)
+            print(f"   💾 Analysis saved → {analysis_file}")
+
+            reels = self.create_reels(video, analysis)
+            if not reels:
+                print(f"   ⚠️  No reels created for {os.path.basename(video)}")
+                continue
+
+            print(f"\n   📂 Reels in {OUTPUT_FOLDER}/:")
+            for reel in reels:
+                print(f"      • {os.path.basename(reel)}")
+
+            uploaded = False
+            if upload:
+                for reel in reels:
+                    result = self.upload_to_youtube(reel, analysis, privacy)
+                    if result:
+                        uploaded = True
+            else:
+                print("   (Upload skipped — use --upload or AUTO_UPLOAD=true)")
+
+            self.mark_video_processed(video, reels, uploaded)
+            processed += 1
+
+        return processed
+
     @logged_task("YouTube Upload")
     def upload_to_youtube(self, reel_path: str, analysis: dict,
                           privacy: str = "private") -> Optional[dict]:
@@ -137,19 +192,68 @@ class AIYouTubeAutomation:
             print("❌ Upload failed")
         return result
 
+    @logged_task("Daily Tip Short")
+    def create_daily_tip(self, niche: Optional[str] = None, upload: bool = False,
+                         privacy: str = "private") -> dict:
+        from tip_shorts import DailyTipPipeline
+        pipeline = DailyTipPipeline(niche=niche or TIP_NICHE)
+        return pipeline.run(upload=upload, privacy=privacy, uploader=self.uploader)
+
+
+def run_smoke_test():
+    import shutil
+    print("\n🧪 Smoke test...")
+    print("✓ config.py loaded")
+    print(f"   GEMINI_API_KEY : {'set' if GEMINI_API_KEY else 'MISSING'}")
+    print(f"   AUTO_UPLOAD    : {AUTO_UPLOAD}")
+    print(f"   Source folder  : {VIDEO_SOURCE_FOLDER}")
+    print(f"   Output folder  : {OUTPUT_FOLDER}")
+    print(f"   Tip niche      : {TIP_NICHE}")
+    print(f"   Tips folder    : {TIPS_OUTPUT_FOLDER}")
+    print(f"   TTS voice      : {TTS_VOICE}")
+    print(f"   Channel name   : {CHANNEL_NAME}")
+    for tool in ("ffmpeg", "ffprobe"):
+        if shutil.which(tool):
+            print(f"✓ {tool} found")
+        else:
+            print(f"⚠️  {tool} not found — install: brew install ffmpeg")
+    if os.path.exists("client_secrets.json"):
+        print("✓ client_secrets.json found")
+    else:
+        print("⚠️  client_secrets.json missing (needed for YouTube upload)")
+    os.makedirs(VIDEO_SOURCE_FOLDER, exist_ok=True)
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    try:
+        import edge_tts  # noqa: F401
+        print("✓ edge-tts installed (Idea 2 TTS)")
+    except ImportError:
+        print("⚠️  edge-tts missing — run: pip install edge-tts")
+    print("\n✅ Setup check complete.")
+    print("   Clip pipeline : python main.py process")
+    print("   Daily tip     : python main.py daily-tip --no-upload")
+
 
 def main():
     parser = argparse.ArgumentParser(description="AI YouTube Automation")
     parser.add_argument("command", choices=[
         "setup", "download", "analyze", "preview",
-        "create", "upload", "run", "schedule", "test", "help"
+        "create", "upload", "process", "run", "full",
+        "daily-tip", "schedule", "test", "help"
     ])
+    parser.add_argument("--niche", default=None,
+                        help="Niche for daily-tip (overrides TIP_NICHE in .env)")
     parser.add_argument("--video", help="Path to video file")
     parser.add_argument("--query", default="trending viral shorts")
     parser.add_argument("--privacy", default="private",
                         choices=["private", "unlisted", "public"])
     parser.add_argument("--time", default="09:00")
     parser.add_argument("--max", type=int, default=2)
+    parser.add_argument("--download", action="store_true",
+                        help="Download trending videos before processing (run/full)")
+    parser.add_argument("--upload", action="store_true",
+                        help="Upload reels to YouTube after creating them")
+    parser.add_argument("--no-upload", action="store_true",
+                        help="Only save reels to output folder (no YouTube)")
 
     args = parser.parse_args()
 
@@ -157,36 +261,46 @@ def main():
         print("""
 Commands:
   test      - Smoke test all components
-  download  - Download trending videos
-  analyze   - Analyze a video with Gemini
-  preview   - Create preview reel
-  create    - Create final reels
-  upload    - Upload reel to YouTube
-  run       - Full pipeline on all local videos
-  schedule  - Start daily scheduler
+  download  - Download trending videos into downloaded_videos/
+  analyze   - Extract hot words & metadata (Gemini)
+  preview   - One preview reel in output_reels/preview/
+  create    - Up to 3 Shorts reels in output_reels/
+  upload    - Upload one reel to YouTube
+  process   - Process all videos in downloaded_videos/ → reels (no download)
+  run       - Same as process (alias); use --download / --upload flags
+  full      - Download trending, then process + optional upload
+  schedule  - Daily: download if empty, process, upload
+  daily-tip - Idea 2: original English tip → TTS → faceless Short (see --niche)
+
+Workflow (clip existing videos):
+  1. Put videos in downloaded_videos/  OR  python main.py download
+  2. python main.py process              → reels + *_analysis.json in output_reels/
+  3. python main.py upload --video ...   → YouTube (or use --upload on process/run)
+
+Workflow (Idea 2 — daily original tip):
+  1. python main.py daily-tip --no-upload   → output_reels/tips/tip_YYYY-MM-DD.mp4
+  2. python main.py daily-tip --upload      → same + YouTube (private by default)
+  3. GitHub Actions cron can run daily-tip once per day
         """)
         return
 
+    if args.command == "test":
+        run_smoke_test()
+        return
+
     automation = AIYouTubeAutomation()
-    need_youtube = args.command in {"upload", "run"}
+    do_upload = args.upload or (AUTO_UPLOAD and not args.no_upload)
+    if args.command in {"run", "full", "schedule"} and not args.no_upload and not args.upload:
+        do_upload = do_upload or AUTO_UPLOAD
+    need_youtube = args.command == "upload" or (
+        do_upload and args.command in {"run", "full", "process", "schedule", "daily-tip"}
+    )
 
     if not automation.check_setup(need_youtube=need_youtube):
         return
 
     try:
-        if args.command == "test":
-            print("\n🧪 Smoke test...")
-            print("✓ config.py loaded")
-            print("✓ VideoAnalyzer ready")
-            print("✓ VideoEditor ready")
-            print("✓ VideoDownloader ready")
-            print("✓ AutomationScheduler ready")
-            print(f"\n   Source  : {VIDEO_SOURCE_FOLDER}")
-            print(f"   Output  : {OUTPUT_FOLDER}")
-            print(f"   Preview : {PREVIEW_FOLDER}")
-            print("\n✅ All components OK")
-
-        elif args.command == "download":
+        if args.command == "download":
             automation.download_trending(args.query, args.max)
 
         elif args.command == "analyze":
@@ -248,58 +362,41 @@ Commands:
                 }
             automation.upload_to_youtube(args.video, analysis, args.privacy)
 
-        elif args.command == "run":
-            videos = automation.downloader.list_downloaded_videos()
-            if not videos:
-                print("No videos in downloaded_videos/ folder.")
-                return
-            # Filter out already processed videos
-            new_videos = [v for v in videos if not automation.is_video_processed(v)]
-            skipped = len(videos) - len(new_videos)
-            if skipped:
-                print(f"\n📁 Found {len(videos)} videos ({skipped} already processed, {len(new_videos)} new)")
-            else:
-                print(f"\n📁 Found {len(videos)} videos")
-            if not new_videos:
-                print("✅ All videos already processed. Nothing to do.")
-                return
-            for video in new_videos:
-                analysis = automation.analyze_video(video)
-                analysis_file = os.path.join(
-                    OUTPUT_FOLDER, f"{Path(video).stem[:40]}_analysis.json")
-                with open(analysis_file, "w") as f:
-                    json.dump(analysis, f, indent=2)
-                reels = automation.create_reels(video, analysis)
-                uploaded = False
-                for reel in reels:
-                    result = automation.upload_to_youtube(reel, analysis, args.privacy)
-                    if result:
-                        uploaded = True
-                automation.mark_video_processed(video, reels, uploaded)
+        elif args.command in ("process", "run"):
+            if args.download:
+                automation.download_trending(args.query, args.max)
+            count = automation.process_local_videos(
+                upload=do_upload, privacy=args.privacy)
+            if count:
+                print(f"\n✅ Done. Processed {count} video(s).")
+                print(f"   Reels → {OUTPUT_FOLDER}/")
+
+        elif args.command == "full":
+            automation.download_trending(args.query, args.max)
+            count = automation.process_local_videos(
+                upload=do_upload, privacy=args.privacy)
+            if count:
+                print(f"\n✅ Full pipeline done ({count} video(s)).")
+
+        elif args.command == "daily-tip":
+            result = automation.create_daily_tip(
+                niche=args.niche,
+                upload=do_upload,
+                privacy=args.privacy,
+            )
+            print(f"\n✅ Daily tip ready → {result['video_path']}")
+            if result.get("uploaded"):
+                print(f"   YouTube ID: {result.get('youtube_id')}")
 
         elif args.command == "schedule":
             def daily_job():
-                videos = automation.downloader.list_downloaded_videos()
-                if not videos:
-                    automation.download_trending("trending viral shorts", 2)
-                    videos = automation.downloader.list_downloaded_videos()
-                # Filter out already processed videos
-                new_videos = [v for v in videos if not automation.is_video_processed(v)]
-                if not new_videos:
-                    print("[Daily Job] All videos already processed. Nothing to do.")
-                    return
-                print(f"[Daily Job] Processing {len(new_videos)} new videos")
-                for video in new_videos:
-                    analysis = automation.analyze_video(video)
-                    reels = automation.create_reels(video, analysis)
-                    uploaded = False
-                    for reel in reels:
-                        result = automation.upload_to_youtube(reel, analysis, "private")
-                        if result:
-                            uploaded = True
-                    automation.mark_video_processed(video, reels, uploaded)
+                automation.create_daily_tip(
+                    niche=args.niche,
+                    upload=AUTO_UPLOAD or do_upload,
+                    privacy="private",
+                )
 
-            print(f"\n⏰ Scheduling daily run at {args.time}")
+            print(f"\n⏰ Scheduling daily tip (Idea 2) at {args.time}")
             automation.scheduler.add_daily_job(daily_job, args.time)
             automation.scheduler.start_background()
             print("Running. Press Ctrl+C to stop.")

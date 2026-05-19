@@ -21,8 +21,21 @@ class VideoEditor:
     def __init__(self):
         os.makedirs(OUTPUT_FOLDER, exist_ok=True)
         os.makedirs(PREVIEW_FOLDER, exist_ok=True)
+        self._drawtext_available = self._check_drawtext_filter()
         print(f"[VideoEditor] Output folder   : {OUTPUT_FOLDER}")
         print(f"[VideoEditor] Preview folder  : {PREVIEW_FOLDER}")
+
+    def _check_drawtext_filter(self) -> bool:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-filters"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return "drawtext" in result.stdout
+        except Exception:
+            return False
 
     def get_video_info(self, video_path: str) -> Dict:
         try:
@@ -54,50 +67,50 @@ class VideoEditor:
             seg_dur = random.randint(TARGET_REEL_DURATION_MIN, TARGET_REEL_DURATION_MAX)
             segments = []
 
-            # Use AI-detected key_moments if available
+            # Use AI-detected key_moments only when timestamps parse (e.g. "1:30 hook")
             key_moments = analysis.get("key_moments") if analysis else None
-            if key_moments and isinstance(key_moments, list) and len(key_moments) >= num_segments:
-                # Parse key moment timestamps (expected format: "MM:SS description" or seconds)
-                for i, moment in enumerate(key_moments[:num_segments]):
-                    center = self._parse_timestamp(moment, duration)
+            parsed_centers = []
+            if key_moments and isinstance(key_moments, list):
+                for moment in key_moments[:num_segments]:
+                    ts = self._parse_timestamp(moment, duration)
+                    if ts is not None:
+                        parsed_centers.append(ts)
+
+            if len(parsed_centers) >= num_segments:
+                for i, center in enumerate(parsed_centers[:num_segments]):
                     start = max(0, center - seg_dur / 2)
                     end = min(duration, start + seg_dur)
                     segments.append((start, end))
                     print(f"[find_segments] Reel {i+1} at key moment: {start:.1f}s → {end:.1f}s")
             else:
-                # Fallback to evenly distributed segments
                 for i in range(num_segments):
                     center = duration * (i + 1) / (num_segments + 1)
                     start = max(0, center - seg_dur / 2)
                     end = min(duration, start + seg_dur)
                     segments.append((start, end))
+                    print(f"[find_segments] Reel {i+1} (even spread): {start:.1f}s → {end:.1f}s")
 
             return segments
         except Exception as e:
             print(f"[find_segments] Error: {e}")
             return [(0, 15)]
 
-    def _parse_timestamp(self, moment, duration: float) -> float:
-        """Parse a key moment string to seconds."""
+    def _parse_timestamp(self, moment, duration: float) -> Optional[float]:
+        """Parse a key moment string to seconds, or None if no timestamp found."""
         if isinstance(moment, (int, float)):
-            return float(moment)
+            return min(float(moment), duration * 0.9)
         if isinstance(moment, str):
-            # Try to extract leading timestamp like "1:30" or "90"
             parts = moment.split()
             if parts:
                 time_part = parts[0]
                 try:
                     if ":" in time_part:
-                        # MM:SS format
                         mm, ss = time_part.split(":", 1)
                         return min(float(mm) * 60 + float(ss), duration * 0.9)
-                    else:
-                        # Plain seconds
-                        return min(float(time_part), duration * 0.9)
+                    return min(float(time_part), duration * 0.9)
                 except ValueError:
                     pass
-        # Default to middle if parsing fails
-        return duration / 2
+        return None
 
     def create_reel_ffmpeg(self, video_path: str, start: float, end: float,
                            output_path: str, title: str = "") -> bool:
@@ -105,17 +118,14 @@ class VideoEditor:
         try:
             duration = end - start
 
-            # Build video filter: crop to 9:16, scale to 1080x1920
-            # Then optionally draw title text on the video
-            # Use min() to handle portrait/square inputs gracefully
+            # Scale up to fill 9:16, then center-crop (avoids commas inside min() breaking -vf)
             vf = (
-                "crop='min(ih*9/16,iw)':ih:(iw-min(ih*9/16,iw))/2:0,"
-                f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,"
-                f"pad={VIDEO_WIDTH}:{VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black"
+                f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT}"
             )
 
-            # Add text overlay if title is provided (uses ffmpeg drawtext)
-            if title:
+            # Title overlay needs ffmpeg compiled with libfreetype (drawtext filter)
+            if title and self._drawtext_available:
                 # Escape special characters for ffmpeg drawtext
                 safe_title = (title[:50]
                               .replace("'", "\\'")
@@ -141,6 +151,8 @@ class VideoEditor:
                     f":shadowcolor=black:shadowx=3:shadowy=3"
                     f":box=1:boxcolor=black@0.5:boxborderw=10"
                 )
+            elif title and not self._drawtext_available:
+                print("[VideoEditor] drawtext not available — skipping title overlay")
 
             cmd = [
                 "ffmpeg", "-y",

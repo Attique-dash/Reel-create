@@ -114,6 +114,34 @@ python main.py run --privacy private
 python main.py schedule --time "09:00"
 ```
 
+### Idea 2 — Daily original tip Shorts (faceless + English TTS)
+
+Creates **original** content: Gemini writes a tip script → `edge-tts` voiceover → PIL slides → 9:16 MP4. No downloading other creators' videos.
+
+```bash
+# 1. Install new dependency
+pip install -r requirements.txt
+
+# 2. Set niche in .env (optional)
+# TIP_NICHE=AI tools and productivity for beginners
+# TTS_VOICE=en-US-JennyNeural
+
+# 3. Create today's Short locally (no YouTube)
+python main.py daily-tip --no-upload
+
+# 4. Upload to YouTube (private by default)
+python main.py daily-tip --upload --privacy private
+
+# 5. Custom niche for one run
+python main.py daily-tip --no-upload --niche "Python coding tips for beginners"
+```
+
+**Output:** `output_reels/tips/tip_YYYY-MM-DD.mp4` and `tip_YYYY-MM-DD_*.json`
+
+**GitHub Actions:** `.github/workflows/daily-tip.yml` runs once per day (cron). Use *Actions → Daily Tip Short → Run workflow* to test manually.
+
+If Gemini quota is exceeded, a built-in English fallback tip is used so the pipeline still produces a video.
+
 ### Privacy Options
 
 - `private` - Only visible to you (default)
@@ -131,13 +159,17 @@ AI-Automation/
 ├── video_editor.py         # ffmpeg-based reel creation
 ├── youtube_uploader.py     # YouTube API upload
 ├── scheduler.py            # Daily job scheduling
+├── tip_generator.py        # Idea 2: Gemini tip scripts
+├── tip_video_builder.py    # Idea 2: TTS + faceless video
+├── tip_shorts.py           # Idea 2: daily tip pipeline
 ├── requirements.txt        # Python dependencies
 ├── .env                    # Environment variables (you create this)
 ├── client_secrets.json     # YouTube OAuth credentials (you create this)
 ├── downloaded_videos/      # Downloaded source videos
 ├── output_reels/           # Created reels and analysis files
 │   ├── .processed_videos.json  # Deduplication tracking
-│   └── preview/            # Preview reels
+│   ├── preview/            # Preview reels
+│   └── tips/               # Idea 2 daily tip Shorts + JSON
 └── youtube_token.pickle    # Saved OAuth token (auto-generated)
 ```
 
