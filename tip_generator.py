@@ -175,20 +175,67 @@ class TipGenerator:
 
     def _fallback_tip(self, topic: Optional[str] = None) -> Dict:
         """
-        Fallback that always produces a coherent Short.
-
-        If a topic is provided (content-queue mode), we generate a topic-aligned 3-step
-        script instead of reusing a static inbox tip (so every video isn't identical).
+        Fallback that generates topic-relevant steps from the topic string itself.
+        (Used when Gemini quota is exceeded / API fails.)
         """
         if topic:
             title = topic.strip().rstrip("?")[:60]
             hook = topic.strip()[:80]
-            # Generic 3-step framework that fits most topics
-            steps = [
-                "Pick one goal for today",
-                "Practice 20 minutes daily",
-                "Prove it with one project",
-            ]
+            t = topic.lower()
+
+            # Topic-aware step templates
+            if any(k in t for k in ("cod", "interview", "leetcode", "algorithm")):
+                steps = [
+                    "Solve one easy problem daily",
+                    "Time yourself under 20 minutes",
+                    "Review the optimal solution after",
+                ]
+            elif any(k in t for k in ("network", "connect", "linkedin")):
+                steps = [
+                    "Message 3 people you admire",
+                    "Comment value on their posts first",
+                    "Ask one specific question each time",
+                ]
+            elif any(k in t for k in ("promot", "raise", "salary", "job", "career")):
+                steps = [
+                    "Document wins weekly in writing",
+                    "Ask your manager for clear targets",
+                    "Request a review date in advance",
+                ]
+            elif any(k in t for k in ("learn", "skill", "study", "python", "data")):
+                steps = [
+                    "Block 20 minutes daily to study",
+                    "Build one small project per week",
+                    "Teach what you learn out loud",
+                ]
+            elif any(k in t for k in ("product", "focus", "habit", "morning", "time")):
+                steps = [
+                    "Pick your top task the night before",
+                    "Work in 25-minute focused blocks",
+                    "Review what you finished each day",
+                ]
+            elif any(k in t for k in ("ai", "chatgpt", "prompt", "tool")):
+                steps = [
+                    "Use role + task + format in prompts",
+                    "Test two prompts, keep the best",
+                    "Save your best prompts in a doc",
+                ]
+            elif any(k in t for k in ("freelan", "side", "income", "money")):
+                steps = [
+                    "Pick one skill you already have",
+                    "Post one offer on a free platform",
+                    "Deliver fast and ask for a review",
+                ]
+            else:
+                # Generic but action-oriented fallback
+                words = [w for w in title.split() if len(w) > 3][:3]
+                noun = words[0].capitalize() if words else "This skill"
+                steps = [
+                    f"Start with one small {noun} task",
+                    f"Practice {noun} for 20 minutes daily",
+                    f"Share your {noun} progress publicly",
+                ]
+
             tip = {
                 "slide_emojis": SLIDE_EMOJIS,
                 "hook": hook[:80],
@@ -212,7 +259,7 @@ class TipGenerator:
                     f"Daily {self.niche} tips in English. Follow {CHANNEL_NAME} for more."
                 ),
                 "tags": ["#shorts", "#tips", "#productivity"],
-                "hot_words": [w for w in title.lower().split()[:6]],
+                "hot_words": [w for w in title.lower().split() if len(w) > 3][:6],
                 "main_topic": "Education",
                 "source": "fallback",
                 "niche": self.niche,
@@ -220,7 +267,7 @@ class TipGenerator:
             }
             return tip
 
-        # Non-topic fallback (kept for compatibility)
+        # Non-topic fallback (static examples, kept for compatibility)
         day_index = date.today().toordinal() % len(FALLBACK_TIPS)
         tip = dict(FALLBACK_TIPS[day_index])
         tip["source"] = "fallback"

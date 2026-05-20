@@ -219,7 +219,8 @@ class TipVideoBuilder:
 
     # ── Slide renderer ────────────────────────────────────────────────────────
 
-    def _render_slide(self, section: Dict, progress: str, total_steps: int = 3) -> Image.Image:
+    def _render_slide(self, section: Dict, progress: str, total_steps: int = 3,
+                  sections: list = None) -> Image.Image:
         W, H   = VIDEO_WIDTH, VIDEO_HEIGHT
         margin = 72
         max_w  = W - 2 * margin
@@ -292,9 +293,9 @@ class TipVideoBuilder:
                                     white, amber, total_steps)
 
         elif kind == "cta":
-            self._render_cta_slide(draw, img, section, margin, max_w, W, H,
-                                   f_label, f_title, f_subtitle, f_icon,
-                                   white, amber)
+    self._render_cta_slide(draw, img, section, margin, max_w, W, H,
+                           f_label, f_title, f_subtitle, f_icon,
+                           white, amber, sections)
 
         # ── Burned-in caption (bottom, word-for-word with voiceover) ──
         cap = section.get("caption", "")
@@ -446,8 +447,19 @@ class TipVideoBuilder:
                 draw.ellipse([cx - r, y - r, cx + r, y + r],
                              outline=_hex_rgb(amber), width=3)
 
-    def _render_cta_slide(self, draw, img, section, margin, max_w, W, H,
-                          f_label, f_title, f_subtitle, f_icon, white, amber):
+   def _render_cta_slide(self, draw, img, section, margin, max_w, W, H,
+                      f_label, f_title, f_subtitle, f_icon, white, amber,
+                      all_sections=None):
+    # Extract real step captions for the recap card
+    recap_labels = []
+    if all_sections:
+        for s in all_sections:
+            if s.get("kind") == "step":
+                recap_labels.append(s.get("caption") or s.get("title", ""))
+    if not recap_labels:
+        recap_labels = ["Step 1", "Step 2", "Step 3"]  # last-resort fallback
+    
+    # ... rest of method unchanged until the recap card block ...
         y = 160
 
         # Save icon (bookmark-style drawn shape)
@@ -484,7 +496,7 @@ class TipVideoBuilder:
                 draw.text(((W - lw3) // 2, y), line, font=f_subtitle, fill="#CBD5E1")
                 y += _text_h(draw, line, f_subtitle) + 12
 
-        # Recap card: 3 steps summary
+        # Recap card: actual step content from the tip
         y = max(y + 40, 900)
         card_top = y
         card_bot = card_top + 230
@@ -496,11 +508,11 @@ class TipVideoBuilder:
             width=2,
         )
         f_recap = _font(FONT_BOLD, 30)
-        recap_labels = ["Step 1", "Step 2", "Step 3"]
         ry = card_top + 22
-        for lbl in recap_labels:
-            draw.text((margin + 20, ry), f"✓  {lbl}", font=f_recap, fill=amber)
-            ry += _text_h(draw, lbl, f_recap) + 16
+        for lbl in recap_labels:          # recap_labels is passed in now
+            short = lbl[:38] + "…" if len(lbl) > 38 else lbl
+            draw.text((margin + 20, ry), f"✓  {short}", font=f_recap, fill=amber)
+            ry += _text_h(draw, short, f_recap) + 16
 
     def _draw_bookmark_icon(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, amber: str):
         """Draw a simple bookmark shape (rectangle with V cutout at bottom)."""
@@ -736,7 +748,7 @@ class TipVideoBuilder:
             seg_paths, durations = [], []
             for i, sec in enumerate(sections):
                 progress = f"{i + 1}/{total_slides}"
-                slide    = self._render_slide(sec, progress, total_steps=total_steps)
+slide = self._render_slide(sec, progress, total_steps=total_steps, sections=sections)
                 png      = os.path.join(work, f"slide_{i}.png")
                 slide.save(png, quality=95)
                 dur = sec["duration"]
