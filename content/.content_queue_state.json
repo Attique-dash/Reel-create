@@ -1,7 +1,8 @@
 {
   "used_indices": [
     21,
-    24
+    24,
+    52
   ],
   "history": [
     {
@@ -15,6 +16,12 @@
       "topic": "5 habits of people who get promoted quickly",
       "video_path": "./output_reels/queue/video_2026-05-19_2016_9f73cb6b.mp4",
       "used_at": "2026-05-19 20:17:00"
+    },
+    {
+      "index": 52,
+      "topic": "Best way to practice coding interviews daily",
+      "video_path": "./output_reels/queue/video_2026-05-19_2037_fb9121cb.mp4",
+      "used_at": "2026-05-19 20:38:23"
     }
   ]
 }

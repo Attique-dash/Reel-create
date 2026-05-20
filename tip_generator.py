@@ -174,16 +174,57 @@ class TipGenerator:
         return json.loads(text.strip())
 
     def _fallback_tip(self, topic: Optional[str] = None) -> Dict:
+        """
+        Fallback that always produces a coherent Short.
+
+        If a topic is provided (content-queue mode), we generate a topic-aligned 3-step
+        script instead of reusing a static inbox tip (so every video isn't identical).
+        """
+        if topic:
+            title = topic.strip().rstrip("?")[:60]
+            hook = topic.strip()[:80]
+            # Generic 3-step framework that fits most topics
+            steps = [
+                "Pick one goal for today",
+                "Practice 20 minutes daily",
+                "Prove it with one project",
+            ]
+            tip = {
+                "slide_emojis": SLIDE_EMOJIS,
+                "hook": hook[:80],
+                "hook_voice": hook[:80],
+                "tip_title": title[:60],
+                "steps": [
+                    {"emoji": "📤", "caption": steps[0], "line": steps[0], "voice": steps[0]},
+                    {"emoji": "📂", "caption": steps[1], "line": steps[1], "voice": steps[1]},
+                    {"emoji": "⏱️", "caption": steps[2], "line": steps[2], "voice": steps[2]},
+                ],
+                "cta_line1": "Save this and try it today",
+                "cta_line2": "Comment 'DONE' when you try it!",
+                "cta_voice": "Save this and try it today. Comment DONE when you try it!",
+                "script": (
+                    f"{hook}. {steps[0]}. {steps[1]}. {steps[2]}. "
+                    "Save this and try it today. Comment DONE when you try it!"
+                ),
+                "suggested_titles": [f"{title[:55]} #Shorts"],
+                "suggested_description": (
+                    f"{topic}\n\n"
+                    f"Daily {self.niche} tips in English. Follow {CHANNEL_NAME} for more."
+                ),
+                "tags": ["#shorts", "#tips", "#productivity"],
+                "hot_words": [w for w in title.lower().split()[:6]],
+                "main_topic": "Education",
+                "source": "fallback",
+                "niche": self.niche,
+                "queue_topic": topic,
+            }
+            return tip
+
+        # Non-topic fallback (kept for compatibility)
         day_index = date.today().toordinal() % len(FALLBACK_TIPS)
         tip = dict(FALLBACK_TIPS[day_index])
         tip["source"] = "fallback"
         tip["niche"] = self.niche
-        if topic:
-            tip["hook"] = topic[:80]
-            tip["hook_voice"] = topic[:120]
-            tip["tip_title"] = topic[:50]
-            tip["queue_topic"] = topic
-            tip["suggested_titles"] = [f"{topic[:55]} #Shorts"]
         return tip
 
     def generate(
@@ -211,7 +252,9 @@ RULES:
 - slide_emojis: ["📧","📤","📂","⏱️","💾"]
 - hook and hook_voice MUST be identical words (max 12 words)
 - Each step: caption, line, and voice MUST be the exact same string (max 10 words)
-- cta_line1: "Save this to clean your inbox tomorrow 📩" (adapt to niche if not email)
+- cta_line1: short, generic, topic-relevant (max 10 words). Examples:
+  - "Save this and try it today"
+  - "Save this for your next interview"
 - cta_line2: "Comment 'DONE' when you try it!"
 - cta_voice: speak cta_line1 then cta_line2 word-for-word (no extra words)
 - 3 logical connected steps. Avoid: {avoid_str}
@@ -226,9 +269,9 @@ RULES:
     {{"emoji":"📂","caption":"...","line":"...","voice":"..."}},
     {{"emoji":"⏱️","caption":"...","line":"...","voice":"..."}}
   ],
-  "cta_line1": "Save this to clean your inbox tomorrow 📩",
+  "cta_line1": "Save this and try it today",
   "cta_line2": "Comment 'DONE' when you try it!",
-  "cta_voice": "Save this to clean your inbox tomorrow. Comment DONE when you try it!",
+  "cta_voice": "Save this and try it today. Comment DONE when you try it!",
   "on_screen_lines": ["step1 caption","step2","step3"],
   "suggested_titles": ["Title #Shorts"],
   "suggested_description": "Description",
