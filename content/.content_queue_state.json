@@ -2,7 +2,8 @@
   "used_indices": [
     21,
     24,
-    52
+    52,
+    31
   ],
   "history": [
     {
@@ -22,6 +23,12 @@
       "topic": "Best way to practice coding interviews daily",
       "video_path": "./output_reels/queue/video_2026-05-19_2037_fb9121cb.mp4",
       "used_at": "2026-05-19 20:38:23"
+    },
+    {
+      "index": 31,
+      "topic": "How to learn English for your career faster",
+      "video_path": "./output_reels/queue/video_2026-05-21_1739_c4bb2a61.mp4",
+      "used_at": "2026-05-21 17:41:17"
     }
   ]
 }

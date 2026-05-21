@@ -57,7 +57,21 @@ TIP_TOTAL_DURATION = float(os.getenv("TIP_TOTAL_DURATION", "28"))
 _raw_durations = os.getenv("TIP_SLIDE_DURATIONS", "5.3,6.3,6.3,6.3,5.3")
 TIP_SLIDE_DURATIONS = [float(x.strip()) for x in _raw_durations.split(",")]
 
-CHANNEL_LOGO_PATH = _env("CHANNEL_LOGO_PATH", "./assets/channel_logo.png")
+def _resolve_channel_logo() -> str:
+    """Prefer .env path, then project logo.png, then assets/."""
+    candidates = [
+        _env("CHANNEL_LOGO_PATH", ""),
+        "./logo.png",
+        "./assets/logo.png",
+        "./assets/channel_logo.png",
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return ""
+
+
+CHANNEL_LOGO_PATH = _resolve_channel_logo()
 BACKGROUND_MUSIC_PATH = _env("BACKGROUND_MUSIC_PATH", "./assets/background_music.mp3")
 
 # Content queue: one topic per line → AI video

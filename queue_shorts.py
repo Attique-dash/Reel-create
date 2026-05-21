@@ -9,7 +9,7 @@ from typing import Dict, Optional
 
 from config import CONTENT_QUEUE_FILE, QUEUE_OUTPUT_FOLDER, TIP_NICHE
 from content_queue import ContentQueue
-from tip_generator import TipGenerator
+from tip_generator import TipGenerator, ensure_tip_steps, parse_step_count
 from tip_video_builder import TipVideoBuilder
 
 
@@ -72,7 +72,10 @@ class QueueVideoPipeline:
 
         print("   Step 1/3: Generating script with AI...")
         tip = self.generator.generate(topic=topic)
+        tip = ensure_tip_steps(tip, topic)
         tip["queue_topic"] = topic
+        n = parse_step_count(topic, tip)
+        print(f"   Tips in video: {n} (+ 1 topic slide + 1 save slide = {n + 2} slides)")
         tip["queue_line_index"] = picked_index
         tip["generated_on"] = date.today().isoformat()
 

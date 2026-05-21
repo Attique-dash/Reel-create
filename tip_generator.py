@@ -10,18 +10,52 @@ from typing import Dict, List, Optional
 
 
 def parse_step_count(topic: Optional[str] = None, tip: Optional[Dict] = None) -> int:
-    """How many step slides to build (2–5). Matches '5 apps', 'top 3', etc."""
+    """
+    How many TIP slides (not counting hook or save/CTA).
+    Topic title wins: "5 apps" → 5 tips → 7 slides total (hook + 5 + save).
+    """
+    from_topic: Optional[int] = None
+    if topic:
+        m = re.search(r"\b(?:top\s+)?(\d+)\b", topic.lower())
+        if m:
+            from_topic = min(max(int(m.group(1)), 2), 5)
+
+    if from_topic is not None:
+        return from_topic
+
     if tip:
         if tip.get("step_count"):
             return min(max(int(tip["step_count"]), 2), 5)
         steps = tip.get("steps") or []
         if len(steps) >= 2:
             return min(len(steps), 5)
-    if topic:
-        m = re.search(r"\b(?:top\s+)?(\d+)\b", topic.lower())
-        if m:
-            return min(max(int(m.group(1)), 2), 5)
     return 3
+
+
+def ensure_tip_steps(tip: Dict, topic: Optional[str] = None) -> Dict:
+    """Pad or trim steps so video matches topic count (e.g. 5 tips, not 3)."""
+    topic = (topic or tip.get("queue_topic") or tip.get("tip_title") or "").strip()
+    n = parse_step_count(topic, tip)
+    steps = list(tip.get("steps") or [])
+
+    if len(steps) < n and topic:
+        extra = TipGenerator._build_extra_steps(topic, len(steps), n)
+        steps.extend(extra)
+
+    while len(steps) < n:
+        i = len(steps)
+        steps.append({
+            "title": f"Tip {i + 1}",
+            "detail": "Apply this step today for faster results.",
+            "caption": f"Tip {i + 1}",
+            "line": "Apply this step today for faster results.",
+            "voice": f"Tip {i + 1}. Apply this step today for faster results.",
+        })
+
+    tip["steps"] = steps[:n]
+    tip["step_count"] = n
+    tip["hook_subtitle"] = tip.get("hook_subtitle") or f"Watch all {n} tips in this Short"
+    return tip
 
 from google import genai
 
@@ -158,6 +192,24 @@ class TipGenerator:
         self.niche = niche or TIP_NICHE
         self.client = client
         Path(QUEUE_OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _build_extra_steps(topic: str, have: int, need: int) -> List[Dict]:
+        """Build missing steps when AI returned fewer than the topic number."""
+        fb = TipGenerator()._fallback_tip(topic)
+        pool = fb.get("steps") or []
+        out = []
+        for i in range(have, need):
+            if i < len(pool):
+                out.append(dict(pool[i]))
+            else:
+                out.append({
+                    "title": f"Tip {i + 1}",
+                    "detail": "One more key action from this topic.",
+                    "voice": f"Tip {i + 1}. One more key action from this topic.",
+                    "line": "One more key action from this topic.",
+                })
+        return out
 
     def _load_history(self) -> List[str]:
         if not TIP_HISTORY_FILE.exists():
@@ -331,7 +383,7 @@ class TipGenerator:
                 "niche": self.niche,
                 "queue_topic": topic,
             }
-            return tip
+            return ensure_tip_steps(tip, topic)
 
         # Non-topic fallback (static examples, kept for compatibility)
         day_index = date.today().toordinal() % len(FALLBACK_TIPS)
@@ -412,13 +464,15 @@ RULES:
                 tip["queue_topic"] = topic
             tip["generated_on"] = date.today().isoformat()
             if not tip.get("on_screen_lines") and tip.get("steps"):
-                tip["on_screen_lines"] = [s.get("line", "") for s in tip["steps"][:3]]
+                tip["on_screen_lines"] = [s.get("line", "") for s in tip["steps"]]
+            tip = ensure_tip_steps(tip, topic)
             self._save_history(tip)
             return tip
         except Exception as e:
             print(f"[TipGenerator] Gemini failed ({e}), using fallback tip")
             tip = self._fallback_tip(topic=topic)
             tip["generated_on"] = date.today().isoformat()
+            tip = ensure_tip_steps(tip, topic)
             self._save_history(tip)
             return tip
 

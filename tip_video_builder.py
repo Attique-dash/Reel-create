@@ -25,7 +25,7 @@ from config import (
     BACKGROUND_MUSIC_PATH, CHANNEL_LOGO_PATH, TIP_BG_COLOR, TIP_TEXT_COLOR,
     TIP_TOTAL_DURATION, TIP_FPS,
 )
-from tip_generator import parse_step_count
+from tip_generator import parse_step_count, ensure_tip_steps
 
 # ── Font paths ─────────────────────────────────────────────────────────────────
 FONT_BOLD = [
@@ -237,10 +237,17 @@ class TipVideoBuilder:
         self.xfade = TIP_XFADE_DURATION
         Path(QUEUE_OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
 
+    def _total_duration_for(self, num_steps: int) -> float:
+        """3 tips ≈ 28s; each extra tip adds ~3.5s so 5 tips fit comfortably."""
+        if num_steps <= 3:
+            return TIP_TOTAL_DURATION
+        return TIP_TOTAL_DURATION + (num_steps - 3) * 3.5
+
     def _durations_for(self, num_steps: int) -> List[float]:
-        """Split ~28s across hook + N steps + CTA."""
+        """hook + N tip slides + save/CTA."""
+        total = self._total_duration_for(num_steps)
         hook, cta = 4.0, 4.2
-        budget = TIP_TOTAL_DURATION - hook - cta
+        budget = total - hook - cta
         per = round(budget / max(num_steps, 1), 2)
         return [hook] + [per] * num_steps + [cta]
 
@@ -270,6 +277,7 @@ class TipVideoBuilder:
 
     def _sections_from_tip(self, tip: Dict) -> List[Dict]:
         topic = tip.get("queue_topic") or tip.get("tip_title", "")
+        tip = ensure_tip_steps(tip, topic)
         n_steps = parse_step_count(topic, tip)
         durations = self._durations_for(n_steps)
         di = 0
@@ -327,6 +335,28 @@ class TipVideoBuilder:
 
     # ── Slide renderer ─────────────────────────────────────────────────────────
 
+    def _paste_channel_logo(self, canvas: Image.Image, W: int, margin: int) -> Image.Image:
+        """Brand logo on every slide (logo.png or CHANNEL_LOGO_PATH)."""
+        if not CHANNEL_LOGO_PATH or not os.path.isfile(CHANNEL_LOGO_PATH):
+            return canvas
+        try:
+            logo = Image.open(CHANNEL_LOGO_PATH).convert("RGBA")
+            size = 88
+            logo.thumbnail((size, size), Image.LANCZOS)
+            layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+            x = W - margin - size - 8
+            y = 16
+            _draw_rounded_rect_rgba(
+                layer, (x - 8, y - 6, x + size + 8, y + size + 6),
+                radius=14, fill=(255, 255, 255, 35),
+                outline=_hex_rgba(self.accent, 100), outline_w=2,
+            )
+            layer.paste(logo, (x, y), logo)
+            return Image.alpha_composite(canvas, layer)
+        except Exception as e:
+            print(f"[TipVideoBuilder] Logo skip: {e}")
+            return canvas
+
     def _draw_progress_bar(self, draw, overlay, W: int, y: int, margin: int,
                            current: int, total: int, accent: str):
         """Segmented progress bar (no slide counter text)."""
@@ -373,15 +403,7 @@ class TipVideoBuilder:
         td = ImageDraw.Draw(top_bar)
         td.text((margin + 16, 28), CHANNEL_NAME, font=f_chan, fill=WHITE)
         canvas = Image.alpha_composite(canvas, top_bar.convert("RGBA"))
-
-        # ── Logo ───────────────────────────────────────────────────────────────
-        if CHANNEL_LOGO_PATH and os.path.exists(CHANNEL_LOGO_PATH):
-            try:
-                logo = Image.open(CHANNEL_LOGO_PATH).convert("RGBA")
-                logo.thumbnail((80, 80))
-                canvas.paste(logo, (W - margin - 80, 130), logo)
-            except Exception:
-                pass
+        canvas = self._paste_channel_logo(canvas, W, margin)
 
         # ── Kind-specific content ──────────────────────────────────────────────
         content_bottom = CONTENT_BOTTOM
@@ -791,9 +813,10 @@ class TipVideoBuilder:
         )
         return out if os.path.exists(out) else paths[0]
 
-    def _final_mux(self, video: str, voice: str, output: str) -> bool:
+    def _final_mux(self, video: str, voice: str, output: str,
+                   target_duration: Optional[float] = None) -> bool:
         bgm = BACKGROUND_MUSIC_PATH
-        t   = TIP_TOTAL_DURATION
+        t   = target_duration if target_duration else TIP_TOTAL_DURATION
         if bgm and os.path.exists(bgm):
             fc = (
                 "[1:a]volume=1.0[v];[2:a]volume=0.08,aloop=loop=-1:size=2e+09[m];"
@@ -823,8 +846,17 @@ class TipVideoBuilder:
     # ── Public entry-point ─────────────────────────────────────────────────────
 
     def build(self, tip: Dict, output_path: Optional[str] = None) -> Optional[str]:
-        sections     = self._sections_from_tip(tip)
-        total_slides = len(sections)
+        sections = self._sections_from_tip(tip)
+        n_tips = sum(1 for s in sections if s.get("kind") == "step")
+        target_dur = self._total_duration_for(n_tips)
+        print(
+            f"[TipVideoBuilder] Slides: 1 topic + {n_tips} tips + 1 save "
+            f"= {len(sections)} total (~{target_dur:.0f}s)"
+        )
+        if CHANNEL_LOGO_PATH:
+            print(f"[TipVideoBuilder] Logo: {CHANNEL_LOGO_PATH}")
+        else:
+            print("[TipVideoBuilder] Logo: none (add logo.png in project root)")
 
         if output_path is None:
             from datetime import date
@@ -877,18 +909,18 @@ class TipVideoBuilder:
 
             voice_full = self._merge_audio(fitted_audio, work)
             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-            if not self._final_mux(video_only, voice_full, output_path):
+            if not self._final_mux(video_only, voice_full, output_path,
+                                   target_duration=target_dur):
                 return None
 
-            # Clamp to exact target duration
             exact = os.path.join(work, "exact.mp4")
             subprocess.run(
                 [
                     "ffmpeg", "-y", "-i", output_path,
-                    "-vf", f"tpad=stop_mode=clone:stop_duration={max(0, TIP_TOTAL_DURATION)}",
+                    "-vf", f"tpad=stop_mode=clone:stop_duration={max(0, target_dur)}",
                     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(TIP_FPS),
                     "-c:a", "aac", "-b:a", "192k",
-                    "-t", f"{TIP_TOTAL_DURATION:.3f}",
+                    "-t", f"{target_dur:.3f}",
                     "-movflags", "+faststart", exact,
                 ],
                 capture_output=True,
@@ -900,7 +932,7 @@ class TipVideoBuilder:
             mb     = os.path.getsize(output_path) / (1024 * 1024)
             print(
                 f"[TipVideoBuilder] ✅  {output_path}  "
-                f"({mb:.1f} MB, {actual:.2f}s / target {TIP_TOTAL_DURATION}s)"
+                f"({mb:.1f} MB, {actual:.2f}s / target {target_dur:.1f}s)"
             )
             return output_path
 
