@@ -50,6 +50,13 @@ FONT_EXTRA = [
     "/System/Library/Fonts/SFNS.ttf",
     "/System/Library/Fonts/Supplemental/Helvetica Neue.ttf",
 ]
+EMOJI_FONT = [
+    "/System/Library/Fonts/Apple Color Emoji.ttc",
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "/usr/share/fonts/noto-color-emoji/NotoColorEmoji.ttf",
+    "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
+    "C:/Windows/Fonts/seguiemj.ttf",
+]
 
 # ── Design tokens ──────────────────────────────────────────────────────────────
 GLASS_BG        = (8, 20, 48, 200)      # semi-transparent dark navy (RGBA)
@@ -74,11 +81,13 @@ BOTTOM_STRIP_H  = 100
 CAPTION_H       = 170
 CONTENT_TOP     = 130
 CONTENT_BOTTOM  = VIDEO_HEIGHT - BOTTOM_STRIP_H - CAPTION_H - 30
+STEP_CIRCLE_CY  = CONTENT_TOP + 200   # fixed — not zone midpoint (avoids dead space)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 _font_warned = False
+_emoji_supported: Optional[bool] = None
 
 
 def _font(paths: List[str], size: int) -> ImageFont.FreeTypeFont:
@@ -143,6 +152,55 @@ def _text_w(draw, text: str, font) -> int:
 
 def _content_zone_mid() -> int:
     return (CONTENT_TOP + CONTENT_BOTTOM) // 2
+
+
+def _emoji_font_supported() -> bool:
+    """True when a color-emoji font exists (macOS/Windows/Noto). Linux CI usually False."""
+    global _emoji_supported
+    if _emoji_supported is not None:
+        return _emoji_supported
+    _emoji_supported = any(os.path.exists(p) for p in EMOJI_FONT)
+    return _emoji_supported
+
+
+def _draw_accent_dot(d, cx: int, cy: int, radius: int, color: str) -> None:
+    d.ellipse(
+        (cx - radius, cy - radius, cx + radius, cy + radius),
+        fill=_hex_rgb(color),
+    )
+
+
+def _draw_bookmark_icon(d, cx: int, cy: int, height: int, color: str) -> None:
+    """Simple bookmark shape when emoji fonts are unavailable."""
+    w = max(int(height * 0.65), 12)
+    h = height
+    x0, y0 = cx - w // 2, cy - h // 2
+    x1 = cx + w // 2
+    notch = h // 4
+    rgb = _hex_rgb(color)
+    d.rectangle([x0, y0, x1, cy + h // 2 - notch], fill=rgb)
+    d.polygon([(x0, cy + h // 2 - notch), (x1, cy + h // 2 - notch), (cx, y0 + h)], fill=rgb)
+
+
+def _draw_centered_headline(d, W: int, y: int, headline: str, font,
+                            max_w: int, emoji: str = "", accent: str = AMBER,
+                            shadow: bool = True, spacing: int = 12) -> int:
+    """Headline centered; accent dot instead of emoji when PIL fonts lack glyphs."""
+    use_dot = bool(emoji) and not _emoji_font_supported()
+    reserve = 36 if use_dot else 0
+    if emoji and _emoji_font_supported():
+        headline = f"{emoji}  {headline}"
+    for i, line in enumerate(_wrap(d, headline, font, max_w - reserve)):
+        lw = _text_w(d, line, font)
+        tx = (W - lw) // 2
+        if use_dot and i == 0:
+            lh = _text_h(d, line, font)
+            _draw_accent_dot(d, tx - 20, y + lh // 2, 10, accent)
+        if shadow:
+            d.text((tx + 2, y + 2), line, font=font, fill=(0, 0, 0))
+        d.text((tx, y), line, font=font, fill=WHITE)
+        y += _text_h(d, line, font) + spacing
+    return y
 
 
 def _draw_centered_pill(overlay, d, text: str, font, y: int, W: int,
@@ -275,13 +333,12 @@ def _topic_to_query(topic: str, step_index: int = 0, kind: str = "step") -> str:
 
 
 def _make_base_bg(photo: Optional[Image.Image], W: int, H: int,
-                  bg_hex: str, style_idx: int = 0,
-                  use_gradient_only: bool = False) -> Image.Image:
-    """Photo (blurred, darkened) or gradient — style varies per slide."""
+                  bg_hex: str, style_idx: int = 0) -> Image.Image:
+    """Photo (blurred, darkened) with per-slide tint/blur; gradient if fetch failed."""
     top_rgba, bot_rgba = BG_STYLE_PRESETS[style_idx % len(BG_STYLE_PRESETS)]
-    if photo and not use_gradient_only:
+    if photo:
         bg = photo.copy().convert("RGBA").resize((W, H), Image.LANCZOS)
-        blur = 3 if style_idx % 2 else 5
+        blur = 3 + (style_idx % 3) * 2   # 3 / 5 / 7 px — rhythm without dropping photos
         bg = bg.filter(ImageFilter.GaussianBlur(radius=blur))
         scrim = _gradient_overlay((W, H), top_rgba=top_rgba, bot_rgba=bot_rgba)
         bg = Image.alpha_composite(bg, scrim)
@@ -463,13 +520,18 @@ class TipVideoBuilder:
     def _draw_progress_bar(self, draw, overlay, W: int, y: int, margin: int,
                            current: int, total: int, accent: str,
                            label: str = ""):
-        """Segmented progress bar with optional step label."""
+        """Segmented progress bar with optional pill label above the segments."""
         gap = 14
         bar_h = 16
         if label:
-            f_lbl = _font(FONT_BOLD, 28)
-            lw = _text_w(draw, label, f_lbl)
-            draw.text(((W - lw) // 2, y - 38), label, font=f_lbl, fill=WHITE)
+            f_lbl = _font(FONT_BOLD, 26)
+            pill_y = y - 50
+            _draw_centered_pill(
+                overlay, draw, label, f_lbl, pill_y, W,
+                fill=(8, 16, 40, 200),
+                outline=_hex_rgba(accent, 160),
+                pad_x=18, pad_y=8, radius=10,
+            )
         bar_w = W - 2 * margin
         seg_w = max(24, (bar_w - (total - 1) * gap) // total)
         x = (W - (total * seg_w + (total - 1) * gap)) // 2
@@ -495,11 +557,7 @@ class TipVideoBuilder:
             slide_idx = 0
         elif kind == "cta":
             slide_idx = section.get("num_steps", 3) + 1
-        use_grad = kind == "step" and slide_idx % 2 == 0
-        base = _make_base_bg(
-            photo, W, H, self.bg_hex,
-            style_idx=slide_idx, use_gradient_only=use_grad,
-        )
+        base = _make_base_bg(photo, W, H, self.bg_hex, style_idx=slide_idx)
         if base.mode != "RGBA":
             base = base.convert("RGBA")
 
@@ -522,10 +580,10 @@ class TipVideoBuilder:
         top_bar = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         td = ImageDraw.Draw(top_bar)
         chan_w = _text_w(td, CHANNEL_NAME, f_chan) + 32
-        chan_x = (W - chan_w) // 2
+        chan_x = margin
         _draw_rounded_rect_rgba(top_bar, (chan_x, 18, chan_x + chan_w, 82),
-                                radius=12, fill=(255, 255, 255, 25),
-                                outline=(255, 255, 255, 50))
+                                radius=12, fill=(8, 16, 40, 200),
+                                outline=_hex_rgba(self.accent, 120), outline_w=2)
         td.text((chan_x + 16, 28), CHANNEL_NAME, font=f_chan, fill=WHITE)
         canvas = Image.alpha_composite(canvas, top_bar.convert("RGBA"))
         canvas = self._paste_channel_logo(canvas, W, margin)
@@ -585,7 +643,7 @@ class TipVideoBuilder:
                                 outline=_hex_rgba(self.accent, 90), outline_w=2)
 
         label = section.get("label", "TODAY'S TIP")
-        y = max(hero_top + 24, _content_zone_mid() - 240)
+        y = CONTENT_TOP + 60
         y = _draw_centered_pill(overlay, d, label, f_label, y, W,
                                 fill=_hex_rgba(self.accent, 230)) + 20
         f_hero = _font(FONT_BOLD, 72)
@@ -630,7 +688,7 @@ class TipVideoBuilder:
             y += circle_r + 36
 
         # Swipe prompt
-        swipe = "👇 Swipe for all tips"
+        swipe = "👇 Swipe for all tips" if _emoji_font_supported() else "Swipe for all tips ▼"
         f_swipe = _font(FONT_BOLD, 34)
         sw = _text_w(d, swipe, f_swipe)
         d.text(((W - sw) // 2, y), swipe, font=f_swipe, fill=WHITE)
@@ -688,7 +746,7 @@ class TipVideoBuilder:
         y = _draw_centered_pill(overlay, d, label, f_label, y, W,
                                 fill=_hex_rgba(col, 220)) + 24
 
-        cx, cy = W // 2, _content_zone_mid() - 40
+        cx, cy = W // 2, STEP_CIRCLE_CY
         r = 96
         f_num_big = _font(FONT_BOLD, 64)
         _draw_rounded_rect_rgba(overlay, (cx - r, cy - r, cx + r, cy + r),
@@ -702,13 +760,9 @@ class TipVideoBuilder:
         y = cy + r + 36
         headline = section.get("title", "")
         f_head = _font(FONT_BOLD, 58)
-        title_line = f"{emoji}  {headline}" if emoji else headline
-        for line in _wrap(d, title_line, f_head, max_w - 40):
-            lw = _text_w(d, line, f_head)
-            tx = (W - lw) // 2
-            d.text((tx + 2, y + 2), line, font=f_head, fill=(0, 0, 0))
-            d.text((tx, y), line, font=f_head, fill=WHITE)
-            y += _text_h(d, line, f_head) + 12
+        y = _draw_centered_headline(
+            d, W, y, headline, f_head, max_w - 40, emoji=emoji, accent=col,
+        )
 
         detail = section.get("detail", "")
         show_why = section.get("show_why", True) and _detail_differs_from_title(headline, detail)
@@ -722,12 +776,19 @@ class TipVideoBuilder:
                                     radius=24,
                                     fill=(255, 255, 255, 28),
                                     outline=_hex_rgba(col, 140), outline_w=2)
-            f_icon = _font(FONT_BOLD, 44)
             f_why = _font(FONT_BOLD, 24)
             why_txt = "WHY IT MATTERS"
-            header = f"{emoji}  {why_txt}"
-            hw = _text_w(d, header, f_why)
-            d.text(((W - hw) // 2, card_y + 20), header, font=f_why, fill=AMBER)
+            if emoji and _emoji_font_supported():
+                header = f"{emoji}  {why_txt}"
+                hw = _text_w(d, header, f_why)
+                d.text(((W - hw) // 2, card_y + 20), header, font=f_why, fill=AMBER)
+            else:
+                hw = _text_w(d, why_txt, f_why)
+                hx = (W - hw) // 2
+                hy = card_y + 20
+                if emoji:
+                    _draw_accent_dot(d, hx - 18, hy + _text_h(d, why_txt, f_why) // 2, 7, col)
+                d.text((hx, hy), why_txt, font=f_why, fill=AMBER)
             dy = card_y + 64
             f_detail = _font(FONT_REG, 36)
             for line in _wrap(d, detail, f_detail, max_w - 80):
@@ -755,11 +816,15 @@ class TipVideoBuilder:
         y = _draw_centered_pill(overlay, d, label, f_label, y, W,
                                 fill=_hex_rgba(self.accent, 220)) + 16
 
-        save_icon = "🔖"
-        f_save = _font(FONT_BOLD, 56)
-        sw = _text_w(d, save_icon, f_save)
-        d.text(((W - sw) // 2, y), save_icon, font=f_save, fill=WHITE)
-        y += _text_h(d, save_icon, f_save) + 8
+        if _emoji_font_supported():
+            save_icon = "🔖"
+            f_save = _font(FONT_BOLD, 56)
+            sw = _text_w(d, save_icon, f_save)
+            d.text(((W - sw) // 2, y), save_icon, font=f_save, fill=WHITE)
+            y += _text_h(d, save_icon, f_save) + 8
+        else:
+            _draw_bookmark_icon(d, W // 2, y + 28, 52, WHITE)
+            y += 60
 
         y = _draw_wrapped_centered(
             d, section.get("title", "Save this for later"), f_big,
@@ -775,8 +840,31 @@ class TipVideoBuilder:
                 d.text(((W - lw) // 2, y), line, font=f_cta_sub, fill=fill)
                 y += _text_h(d, line, f_cta_sub) + 12
 
-        card_y   = max(y + 32, _content_zone_mid() - 80)
-        card_bot = min(card_y + 360, CONTENT_BOTTOM - 40)
+        card_y = max(y + 32, _content_zone_mid() - 80)
+        f_rec = _font(FONT_BOLD, 38)
+        nf2 = _font(FONT_BOLD, 22)
+        f_em = _font(FONT_BOLD, 34)
+        draw_em = _emoji_font_supported()
+        step_sections = [s for s in all_sections if s.get("kind") == "step"]
+        recap_text_w = max_w - 120   # ~50+ chars at recap font size
+        marker_r = 8
+        marker_slot = marker_r * 2 + 12
+
+        recap_rows: List[Tuple[List[str], int, str, str]] = []
+        for s in step_sections:
+            txt = (s.get("title") or "").strip()
+            em = s.get("emoji", STEP_EMOJIS[len(recap_rows) % len(STEP_EMOJIS)])
+            col = STEP_COLORS[len(recap_rows) % len(STEP_COLORS)]
+            wrap_w = recap_text_w - (marker_slot if em and not draw_em else 0)
+            lines = _wrap(d, txt, f_rec, wrap_w)
+            line_step = _text_h(d, lines[0], f_rec) + 8
+            recap_rows.append((lines, max(44, len(lines) * line_step), em, col))
+
+        recap_body_h = sum(row_h for _, row_h, _, _ in recap_rows) + max(0, len(recap_rows) - 1) * 12
+        card_bot = min(
+            max(card_y + 78 + recap_body_h + 28, card_y + 220),
+            CONTENT_BOTTOM - 40,
+        )
         _draw_rounded_rect_rgba(overlay,
                                 (margin, card_y, W - margin, card_bot),
                                 radius=28,
@@ -793,35 +881,39 @@ class TipVideoBuilder:
                                 radius=2, fill=_hex_rgba(self.accent, 80))
 
         ry = card_y + 78
-        f_rec = _font(FONT_BOLD, 38)
-        nf2 = _font(FONT_BOLD, 22)
-        f_em = _font(FONT_BOLD, 34)
-        step_sections = [s for s in all_sections if s.get("kind") == "step"]
-        for idx, s in enumerate(step_sections):
-            col = STEP_COLORS[idx % len(STEP_COLORS)]
-            em = s.get("emoji", STEP_EMOJIS[idx % len(STEP_EMOJIS)])
-            txt = s.get("title", "")
-            if len(txt) > 32:
-                txt = txt[:30] + "…"
+        for idx, (lines, row_h, em, col) in enumerate(recap_rows):
             num_s = str(idx + 1)
             badge_r = 18
-            row_parts_w = (
-                badge_r * 2 + 12
-                + _text_w(d, em, f_em) + 12
-                + _text_w(d, txt, f_rec)
-            )
+            widest = max(_text_w(d, ln, f_rec) for ln in lines)
+            row_parts_w = badge_r * 2 + 12 + widest
+            if draw_em and em:
+                row_parts_w += _text_w(d, em, f_em) + 12
+            elif em:
+                row_parts_w += marker_slot
             row_x = (W - row_parts_w) // 2
             cx_badge = row_x + badge_r
+            badge_cy = ry + row_h // 2
             _draw_rounded_rect_rgba(overlay,
-                                    (cx_badge - badge_r, ry + 2,
-                                     cx_badge + badge_r, ry + 38),
+                                    (cx_badge - badge_r, badge_cy - badge_r,
+                                     cx_badge + badge_r, badge_cy + badge_r),
                                     radius=badge_r, fill=_hex_rgba(col, 220))
-            d.text((cx_badge - _text_w(d, num_s, nf2) // 2, ry + 8),
-                   num_s, font=nf2, fill=WHITE)
+            d.text(
+                (cx_badge - _text_w(d, num_s, nf2) // 2,
+                 badge_cy - _text_h(d, num_s, nf2) // 2),
+                num_s, font=nf2, fill=WHITE,
+            )
             ex = cx_badge + badge_r + 12
-            d.text((ex, ry + 2), em, font=f_em, fill=WHITE)
-            d.text((ex + _text_w(d, em, f_em) + 12, ry + 4), txt, font=f_rec, fill=WHITE)
-            ry += 112
+            if draw_em and em:
+                d.text((ex, badge_cy - _text_h(d, em, f_em) // 2), em, font=f_em, fill=WHITE)
+                ex += _text_w(d, em, f_em) + 12
+            elif em:
+                _draw_accent_dot(d, ex + marker_r, badge_cy, marker_r, col)
+                ex += marker_slot
+            ty = ry + max(0, (row_h - sum(_text_h(d, ln, f_rec) + 8 for ln in lines) + 8) // 2)
+            for line in lines:
+                d.text((ex, ty), line, font=f_rec, fill=WHITE)
+                ty += _text_h(d, line, f_rec) + 8
+            ry += row_h + 12
 
         return Image.alpha_composite(canvas, overlay), card_bot
 

@@ -5,7 +5,8 @@
     52,
     31,
     4,
-    46
+    46,
+    1
   ],
   "history": [
     {
@@ -43,6 +44,12 @@
       "topic": "How to create a 90-day career growth plan",
       "video_path": "./output_reels/queue/video_2026-05-21_1847_8d8dc467.mp4",
       "used_at": "2026-05-21 18:49:02"
+    },
+    {
+      "index": 1,
+      "topic": "How to use ChatGPT for your job search in 10 minutes",
+      "video_path": "./output_reels/queue/video_2026-05-21_2014_984ed29a.mp4",
+      "used_at": "2026-05-21 20:16:27"
     }
   ]
 }
