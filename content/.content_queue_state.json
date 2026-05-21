@@ -3,7 +3,8 @@
     21,
     24,
     52,
-    31
+    31,
+    4
   ],
   "history": [
     {
@@ -29,6 +30,12 @@
       "topic": "How to learn English for your career faster",
       "video_path": "./output_reels/queue/video_2026-05-21_1739_c4bb2a61.mp4",
       "used_at": "2026-05-21 17:41:17"
+    },
+    {
+      "index": 4,
+      "topic": "Best free AI tools for students in 2026",
+      "video_path": "./output_reels/queue/video_2026-05-21_1832_fa6aac70.mp4",
+      "used_at": "2026-05-21 18:37:14"
     }
   ]
 }

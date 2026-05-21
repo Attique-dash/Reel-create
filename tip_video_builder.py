@@ -9,6 +9,7 @@ Build 9:16 tip Shorts — modern design with:
 import asyncio
 import io
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -25,7 +26,10 @@ from config import (
     BACKGROUND_MUSIC_PATH, CHANNEL_LOGO_PATH, TIP_BG_COLOR, TIP_TEXT_COLOR,
     TIP_TOTAL_DURATION, TIP_FPS,
 )
-from tip_generator import parse_step_count, ensure_tip_steps
+from tip_generator import (
+    parse_step_count, apply_priority_fixes, make_step_detail, _detail_differs_from_title,
+    SLIDE_EMOJIS,
+)
 
 # ── Font paths ─────────────────────────────────────────────────────────────────
 FONT_BOLD = [
@@ -56,6 +60,13 @@ AMBER           = "#FF8C00"
 WHITE           = "#FFFFFF"
 SLATE           = "#CBD5E1"
 STEP_COLORS     = ["#FF8C00", "#FF6B35", "#FF4757", "#9B59B6", "#3498DB"]
+STEP_EMOJIS     = ["💡", "⚡", "🎯", "✅", "🚀"]
+BG_STYLE_PRESETS = [
+    ((5, 10, 30, 150), (5, 10, 30, 235)),
+    ((45, 25, 10, 130), (25, 12, 5, 220)),
+    ((10, 35, 50, 140), (5, 18, 35, 225)),
+    ((30, 10, 40, 135), (15, 5, 25, 215)),
+]
 
 # Layout zones (9:16) — keeps caption off cards/dots
 TOP_BAR_H       = 110
@@ -130,6 +141,36 @@ def _text_w(draw, text: str, font) -> int:
     return bb[2] - bb[0]
 
 
+def _content_zone_mid() -> int:
+    return (CONTENT_TOP + CONTENT_BOTTOM) // 2
+
+
+def _draw_centered_pill(overlay, d, text: str, font, y: int, W: int,
+                        fill, outline=None, pad_x: int = 24, pad_y: int = 10,
+                        radius: int = 12, text_fill: str = WHITE) -> int:
+    tw, th = _text_w(d, text, font), _text_h(d, text, font)
+    pw, ph = tw + 2 * pad_x, th + 2 * pad_y
+    x0 = (W - pw) // 2
+    kw = {"outline": outline, "outline_w": 2} if outline else {}
+    _draw_rounded_rect_rgba(overlay, (x0, y, x0 + pw, y + ph),
+                            radius=radius, fill=fill, **kw)
+    d.text((x0 + pad_x, y + pad_y), text, font=font, fill=text_fill)
+    return y + ph
+
+
+def _draw_wrapped_centered(d, text: str, font, max_w: int, W: int, y: int,
+                           fill: str = WHITE, shadow: bool = False,
+                           spacing: int = 10) -> int:
+    for line in _wrap(d, text, font, max_w):
+        lw = _text_w(d, line, font)
+        tx = (W - lw) // 2
+        if shadow:
+            d.text((tx + 2, y + 2), line, font=font, fill=(0, 0, 0))
+        d.text((tx, y), line, font=font, fill=fill)
+        y += _text_h(d, line, font) + spacing
+    return y
+
+
 def _draw_rounded_rect_rgba(img: Image.Image, xy: Tuple, radius: int,
                              fill=None, outline=None, outline_w: int = 3):
     """Draw a rounded rect with RGBA fill onto an RGBA image using paste."""
@@ -194,37 +235,66 @@ def _fetch_background_image(query: str, w: int = 1080, h: int = 1920,
     return None
 
 
-def _topic_to_query(topic: str) -> str:
-    """Extract 2-3 visual keywords from a topic string."""
-    stopwords = {"how", "to", "the", "a", "an", "in", "on", "at", "for",
-                 "of", "and", "or", "is", "are", "you", "your", "my", "i",
-                 "that", "this", "with", "without", "when", "why", "what",
-                 "5", "3", "10", "top", "best", "tips", "ways", "most"}
+def _topic_to_query(topic: str, step_index: int = 0, kind: str = "step") -> str:
+    """Build photo keywords — blend full topic with step so short titles still match."""
+    stopwords = {
+        "how", "to", "the", "a", "an", "in", "on", "at", "for", "of", "and", "or",
+        "is", "are", "you", "your", "my", "i", "that", "this", "with", "without",
+        "when", "why", "what", "can", "start", "using", "into", "from", "all",
+        "top", "best", "tips", "ways", "most", "watch", "try", "today", "comment",
+    }
+    visual_boost = {
+        "ai": "artificial intelligence laptop workspace",
+        "freelance": "freelancer home office laptop money",
+        "coding": "programmer coding screen office",
+        "productivity": "productive desk planner coffee",
+        "network": "business networking handshake office",
+        "career": "office professional career growth",
+        "learning": "student studying books laptop",
+    }
+    t_lower = topic.lower()
+    boost = ""
+    for key, phrase in visual_boost.items():
+        if key in t_lower or (key == "ai" and re.search(r"\bai\b", t_lower)):
+            boost = phrase
+            break
+
     words = [w.lower().strip(",.?!") for w in topic.split()]
-    keywords = [w for w in words if w not in stopwords and len(w) > 2][:3]
-    return " ".join(keywords) if keywords else "productivity office"
+    keywords = [w for w in words if w not in stopwords and len(w) > 2]
+
+    if kind == "hook" and boost:
+        return boost
+    if len(keywords) < 2 and boost:
+        keywords = boost.split()[:4] + keywords
+    elif boost and keywords:
+        keywords = (boost.split()[:2] + keywords)[:4]
+
+    if not keywords:
+        return "productivity modern office"
+    return " ".join(keywords[:4])
 
 
 def _make_base_bg(photo: Optional[Image.Image], W: int, H: int,
-                  bg_hex: str) -> Image.Image:
-    """Photo (blurred, darkened) or gradient fallback — always W×H."""
-    if photo:
+                  bg_hex: str, style_idx: int = 0,
+                  use_gradient_only: bool = False) -> Image.Image:
+    """Photo (blurred, darkened) or gradient — style varies per slide."""
+    top_rgba, bot_rgba = BG_STYLE_PRESETS[style_idx % len(BG_STYLE_PRESETS)]
+    if photo and not use_gradient_only:
         bg = photo.copy().convert("RGBA").resize((W, H), Image.LANCZOS)
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=4))
-        # Dark scrim overlay — bottom heavier for readability
-        scrim = _gradient_overlay((W, H),
-                                  top_rgba=(5, 10, 30, 160),
-                                  bot_rgba=(5, 10, 30, 230))
+        blur = 3 if style_idx % 2 else 5
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=blur))
+        scrim = _gradient_overlay((W, H), top_rgba=top_rgba, bot_rgba=bot_rgba)
         bg = Image.alpha_composite(bg, scrim)
         return bg.convert("RGBA")
-    else:
-        # Gradient fallback
-        r, g, b = _hex_rgb(bg_hex)
-        dr, dg, db = max(r - 30, 0), max(g - 30, 0), max(b - 30, 0)
-        grad = _gradient_overlay((W, H),
-                                 top_rgba=(r, g, b, 255),
-                                 bot_rgba=(dr, dg, db, 255))
-        return grad
+    r, g, b = _hex_rgb(bg_hex)
+    if style_idx % 3 == 1:
+        r, g, b = min(r + 25, 255), min(g + 10, 255), b
+    elif style_idx % 3 == 2:
+        r, g, b = r, min(g + 15, 255), min(b + 20, 255)
+    dr, dg, db = max(r - 35, 0), max(g - 35, 0), max(b - 35, 0)
+    grad = _gradient_overlay((W, H), top_rgba=(r, g, b, 255), bot_rgba=(dr, dg, db, 255))
+    overlay = _gradient_overlay((W, H), top_rgba=top_rgba, bot_rgba=bot_rgba)
+    return Image.alpha_composite(grad.convert("RGBA"), overlay)
 
 
 # ── Main builder ───────────────────────────────────────────────────────────────
@@ -251,7 +321,8 @@ class TipVideoBuilder:
         per = round(budget / max(num_steps, 1), 2)
         return [hook] + [per] * num_steps + [cta]
 
-    def _normalize_step(self, step: Dict, index: int, total: int) -> Dict:
+    def _normalize_step(self, step: Dict, index: int, total: int,
+                        topic: str = "") -> Dict:
         headline = (
             step.get("title") or step.get("caption")
             or step.get("line") or f"Step {index + 1}"
@@ -262,22 +333,31 @@ class TipVideoBuilder:
         ).strip()
         if not detail or detail.lower() == headline.lower():
             detail = step.get("body", "").strip()
+        if not _detail_differs_from_title(headline, detail):
+            detail = make_step_detail(headline, topic, index)
         voice = (step.get("voice") or "").strip()
         if not voice:
             voice = f"{headline}. {detail}" if detail else headline
         cap = (step.get("caption") or "").strip()
         if cap.lower() == headline.lower() or cap.lower() == detail.lower():
             cap = ""
+        emoji = (step.get("emoji") or "").strip()
+        if not emoji:
+            slide_emojis = step.get("_slide_emojis") or SLIDE_EMOJIS
+            emoji = slide_emojis[(index + 1) % len(slide_emojis)] if slide_emojis else STEP_EMOJIS[index % len(STEP_EMOJIS)]
+        show_why = _detail_differs_from_title(headline, detail)
         return {
             "headline": headline,
-            "detail": detail or headline,
+            "detail": detail,
             "voice": voice,
             "caption": cap,
+            "emoji": emoji,
+            "show_why": show_why,
         }
 
     def _sections_from_tip(self, tip: Dict) -> List[Dict]:
         topic = tip.get("queue_topic") or tip.get("tip_title", "")
-        tip = ensure_tip_steps(tip, topic)
+        tip = apply_priority_fixes(tip, topic)
         n_steps = parse_step_count(topic, tip)
         durations = self._durations_for(n_steps)
         di = 0
@@ -285,25 +365,39 @@ class TipVideoBuilder:
         hook_title = tip.get("hook", "")
         hook_voice = tip.get("hook_voice") or hook_title
         hook_sub = tip.get("hook_subtitle", "") or f"Watch all {n_steps} tips below"
-
-        sections = [{
-            "kind":      "hook",
-            "label":     "TODAY'S TIP",
-            "title":     hook_title,
-            "subtitle":  hook_sub,
-            "caption":   "",
-            "voice":     hook_voice,
-            "duration":  durations[di],
-            "num_steps": n_steps,
-        }]
-        di += 1
+        slide_emojis = tip.get("slide_emojis") or SLIDE_EMOJIS
 
         steps = (tip.get("steps") or [])[:n_steps]
         while len(steps) < n_steps:
             steps.append({"title": f"Step {len(steps) + 1}", "detail": "", "voice": ""})
 
+        step_sections_data = []
         for i, raw in enumerate(steps):
-            norm = self._normalize_step(raw, i, n_steps)
+            norm = self._normalize_step(raw, i, n_steps, topic=topic)
+            step_sections_data.append(norm)
+
+        step_previews = [
+            {"num": i + 1, "title": s["headline"][:42]}
+            for i, s in enumerate(step_sections_data)
+        ]
+        tip1_teaser = step_sections_data[0]["headline"] if step_sections_data else ""
+
+        sections = [{
+            "kind":          "hook",
+            "label":         "TODAY'S TIP",
+            "title":         hook_title,
+            "subtitle":      hook_sub,
+            "caption":       "",
+            "voice":         hook_voice,
+            "duration":      durations[di],
+            "num_steps":     n_steps,
+            "step_previews": step_previews,
+            "tip1_teaser":   tip1_teaser,
+            "topic":         topic,
+        }]
+        di += 1
+
+        for i, norm in enumerate(step_sections_data):
             sections.append({
                 "kind":      "step",
                 "step_num":  i + 1,
@@ -313,12 +407,20 @@ class TipVideoBuilder:
                 "detail":    norm["detail"],
                 "caption":   norm["caption"],
                 "voice":     norm["voice"],
+                "emoji":     norm["emoji"],
+                "show_why":  norm["show_why"],
                 "duration":  durations[di],
                 "color":     STEP_COLORS[i % len(STEP_COLORS)],
+                "topic":     topic,
             })
             di += 1
 
-        cta_line1 = tip.get("cta_line1", "Save this for later")
+        cta_line1 = tip.get("cta_line1", "")
+        if not cta_line1 or cta_line1.strip().lower() in (
+            "save this and try it today", "save this for later",
+        ):
+            short_topic = topic.strip().rstrip("?")[:50] if topic else "this"
+            cta_line1 = f"Save these {n_steps} tips on {short_topic}"
         cta_line2 = tip.get("cta_line2", "Comment 'DONE' when you try it!")
         cta_voice = tip.get("cta_voice") or f"{cta_line1}. {cta_line2}"
         sections.append({
@@ -330,6 +432,7 @@ class TipVideoBuilder:
             "voice":     cta_voice,
             "duration":  durations[di],
             "num_steps": n_steps,
+            "topic":     topic,
         })
         return sections
 
@@ -358,15 +461,27 @@ class TipVideoBuilder:
             return canvas
 
     def _draw_progress_bar(self, draw, overlay, W: int, y: int, margin: int,
-                           current: int, total: int, accent: str):
-        """Segmented progress bar (no slide counter text)."""
+                           current: int, total: int, accent: str,
+                           label: str = ""):
+        """Segmented progress bar with optional step label."""
+        gap = 14
+        bar_h = 16
+        if label:
+            f_lbl = _font(FONT_BOLD, 28)
+            lw = _text_w(draw, label, f_lbl)
+            draw.text(((W - lw) // 2, y - 38), label, font=f_lbl, fill=WHITE)
         bar_w = W - 2 * margin
-        seg_w = (bar_w - (total - 1) * 8) // total
-        x = margin
+        seg_w = max(24, (bar_w - (total - 1) * gap) // total)
+        x = (W - (total * seg_w + (total - 1) * gap)) // 2
         for i in range(total):
-            fill = _hex_rgba(accent, 220) if i < current else (255, 255, 255, 50)
-            _draw_rounded_rect_rgba(overlay, (x, y, x + seg_w, y + 10), radius=5, fill=fill)
-            x += seg_w + 8
+            filled = i < current
+            fill = _hex_rgba(accent, 255 if filled else 80)
+            if not filled:
+                fill = (255, 255, 255, 70)
+            _draw_rounded_rect_rgba(
+                overlay, (x, y, x + seg_w, y + bar_h), radius=8, fill=fill,
+            )
+            x += seg_w + gap
 
     def _render_slide(self, section: Dict, photo: Optional[Image.Image],
                       sections: List[Dict]) -> Image.Image:
@@ -375,8 +490,16 @@ class TipVideoBuilder:
         max_w  = W - 2 * margin
         kind   = section.get("kind", "hook")
 
-        # Base background (RGBA)
-        base = _make_base_bg(photo, W, H, self.bg_hex)
+        slide_idx = section.get("step_num", 0) or 0
+        if kind == "hook":
+            slide_idx = 0
+        elif kind == "cta":
+            slide_idx = section.get("num_steps", 3) + 1
+        use_grad = kind == "step" and slide_idx % 2 == 0
+        base = _make_base_bg(
+            photo, W, H, self.bg_hex,
+            style_idx=slide_idx, use_gradient_only=use_grad,
+        )
         if base.mode != "RGBA":
             base = base.convert("RGBA")
 
@@ -397,11 +520,13 @@ class TipVideoBuilder:
         canvas = canvas.resize((W, H), Image.LANCZOS).convert("RGBA")
 
         top_bar = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        _draw_rounded_rect_rgba(top_bar, (margin, 18, margin + 200, 82),
+        td = ImageDraw.Draw(top_bar)
+        chan_w = _text_w(td, CHANNEL_NAME, f_chan) + 32
+        chan_x = (W - chan_w) // 2
+        _draw_rounded_rect_rgba(top_bar, (chan_x, 18, chan_x + chan_w, 82),
                                 radius=12, fill=(255, 255, 255, 25),
                                 outline=(255, 255, 255, 50))
-        td = ImageDraw.Draw(top_bar)
-        td.text((margin + 16, 28), CHANNEL_NAME, font=f_chan, fill=WHITE)
+        td.text((chan_x + 16, 28), CHANNEL_NAME, font=f_chan, fill=WHITE)
         canvas = Image.alpha_composite(canvas, top_bar.convert("RGBA"))
         canvas = self._paste_channel_logo(canvas, W, margin)
 
@@ -446,47 +571,105 @@ class TipVideoBuilder:
 
     def _render_hook(self, canvas, section, margin, max_w, W, H,
                      f_label, f_big, f_sub, f_small) -> Tuple[Image.Image, int]:
-        """Intro only — no step spoilers."""
+        """Intro with teaser grid, swipe cue, and tip 1 preview."""
         overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d = ImageDraw.Draw(overlay)
         n = section.get("num_steps", 3)
 
-        hero_top = CONTENT_TOP + 40
+        hero_top = CONTENT_TOP + 16
+        hero_bot = CONTENT_BOTTOM - 36
         _draw_rounded_rect_rgba(overlay,
-                                (margin, hero_top, W - margin, CONTENT_BOTTOM - 40),
+                                (margin, hero_top, W - margin, hero_bot),
                                 radius=32,
                                 fill=(255, 255, 255, 20),
                                 outline=_hex_rgba(self.accent, 90), outline_w=2)
 
         label = section.get("label", "TODAY'S TIP")
-        _draw_rounded_rect_rgba(overlay,
-                                (margin + 32, hero_top + 28, margin + 32 + 300, hero_top + 80),
-                                radius=12, fill=_hex_rgba(self.accent, 230))
-        d.text((margin + 52, hero_top + 38), label, font=f_label, fill=WHITE)
-
-        y = hero_top + 110
-        f_hero = _font(FONT_BOLD, 78)
+        y = max(hero_top + 24, _content_zone_mid() - 240)
+        y = _draw_centered_pill(overlay, d, label, f_label, y, W,
+                                fill=_hex_rgba(self.accent, 230)) + 20
+        f_hero = _font(FONT_BOLD, 72)
         for line in _wrap(d, section.get("title", ""), f_hero, max_w - 60):
             lw = _text_w(d, line, f_hero)
             tx = (W - lw) // 2
             d.text((tx + 3, y + 3), line, font=f_hero, fill=(0, 0, 0))
             d.text((tx, y), line, font=f_hero, fill=WHITE)
-            y += _text_h(d, line, f_hero) + 20
+            y += _text_h(d, line, f_hero) + 16
 
         sub = section.get("subtitle", "")
         if sub:
-            y += 24
-            f_teaser = _font(FONT_REG, 40)
+            y += 12
+            f_teaser = _font(FONT_REG, 36)
             for line in _wrap(d, sub, f_teaser, max_w - 80):
                 lw = _text_w(d, line, f_teaser)
                 d.text(((W - lw) // 2, y), line, font=f_teaser, fill=AMBER)
-                y += _text_h(d, line, f_teaser) + 12
+                y += _text_h(d, line, f_teaser) + 10
 
-        bar_y = CONTENT_BOTTOM - 70
-        self._draw_progress_bar(d, overlay, W, bar_y, margin, 0, n, self.accent)
-        d.text((margin, bar_y + 22), "Swipe through each tip", font=f_small, fill=SLATE)
+        # Numbered teaser circles
+        previews = section.get("step_previews") or []
+        if previews:
+            y += 28
+            circle_r = 36
+            total_w = n * (circle_r * 2 + 20) - 20
+            start_x = (W - total_w) // 2 + circle_r
+            f_circ = _font(FONT_BOLD, 32)
+            for i, p in enumerate(previews):
+                num = p.get("num", i + 1)
+                cx = start_x + i * (circle_r * 2 + 20)
+                col = STEP_COLORS[(num - 1) % len(STEP_COLORS)]
+                _draw_rounded_rect_rgba(
+                    overlay,
+                    (cx - circle_r, y - circle_r, cx + circle_r, y + circle_r),
+                    radius=circle_r, fill=_hex_rgba(col, 210),
+                )
+                ns = str(num)
+                d.text(
+                    (cx - _text_w(d, ns, f_circ) // 2, y - _text_h(d, ns, f_circ) // 2),
+                    ns, font=f_circ, fill=WHITE,
+                )
+            y += circle_r + 36
 
-        return Image.alpha_composite(canvas, overlay), CONTENT_BOTTOM - 120
+        # Swipe prompt
+        swipe = "👇 Swipe for all tips"
+        f_swipe = _font(FONT_BOLD, 34)
+        sw = _text_w(d, swipe, f_swipe)
+        d.text(((W - sw) // 2, y), swipe, font=f_swipe, fill=WHITE)
+        y += 48
+        arrow = "▼"
+        f_arr = _font(FONT_BOLD, 40)
+        aw = _text_w(d, arrow, f_arr)
+        d.text(((W - aw) // 2, y), arrow, font=f_arr, fill=AMBER)
+        y += 52
+
+        # Tip 1 teaser
+        tip1 = (section.get("tip1_teaser") or "").strip()
+        if tip1:
+            f_t1 = _font(FONT_BOLD, 30)
+            tip_lines = _wrap(d, tip1, f_t1, max_w - 120)
+            teaser_h = 52 + sum(_text_h(d, ln, f_t1) + 4 for ln in tip_lines)
+            card_w = max_w - 80
+            card_x0 = (W - card_w) // 2
+            _draw_rounded_rect_rgba(
+                overlay, (card_x0, y, card_x0 + card_w, y + teaser_h),
+                radius=16, fill=(255, 255, 255, 28),
+                outline=_hex_rgba(self.accent, 100), outline_w=2,
+            )
+            up_w = _text_w(d, "Up first:", f_small)
+            d.text(((W - up_w) // 2, y + 12), "Up first:", font=f_small, fill=AMBER)
+            ty = y + 40
+            for line in tip_lines:
+                lw = _text_w(d, line, f_t1)
+                d.text(((W - lw) // 2, ty), line, font=f_t1, fill=WHITE)
+                ty += _text_h(d, line, f_t1) + 4
+            y += teaser_h + 24
+
+        bar_y = CONTENT_BOTTOM - 58
+        self._draw_progress_bar(
+            d, overlay, W, bar_y, margin, 0, n, self.accent,
+            label=f"{n} tips inside — swipe →",
+        )
+
+        return Image.alpha_composite(canvas, overlay), CONTENT_BOTTOM - 100
 
     # ── Step slide ─────────────────────────────────────────────────────────────
 
@@ -498,54 +681,67 @@ class TipVideoBuilder:
         step_num = section.get("step_num", 1)
         n_steps  = section.get("num_steps", 3)
         col      = section.get("color", self.accent)
-
-        _draw_rounded_rect_rgba(overlay, (margin, CONTENT_TOP, margin + 10, CONTENT_TOP + 480),
-                                radius=5, fill=_hex_rgba(col, 230))
+        emoji    = section.get("emoji", "💡")
 
         label = section.get("label", f"STEP {step_num} / {n_steps}")
-        _draw_rounded_rect_rgba(overlay,
-                                (margin + 28, CONTENT_TOP + 8, margin + 28 + 320, CONTENT_TOP + 60),
-                                radius=10, fill=_hex_rgba(col, 220))
-        d.text((margin + 48, CONTENT_TOP + 16), label, font=f_label, fill=WHITE)
+        y = CONTENT_TOP + 12
+        y = _draw_centered_pill(overlay, d, label, f_label, y, W,
+                                fill=_hex_rgba(col, 220)) + 24
 
-        cx, cy = W // 2, CONTENT_TOP + 200
-        r = 72
+        cx, cy = W // 2, _content_zone_mid() - 40
+        r = 96
+        f_num_big = _font(FONT_BOLD, 64)
         _draw_rounded_rect_rgba(overlay, (cx - r, cy - r, cx + r, cy + r),
-                                radius=r, fill=_hex_rgba(col, 200))
+                                radius=r, fill=_hex_rgba(col, 220))
         num = str(step_num)
-        d.text((cx - _text_w(d, num, f_num) // 2, cy - _text_h(d, num, f_num) // 2),
-               num, font=f_num, fill=WHITE)
+        d.text(
+            (cx - _text_w(d, num, f_num_big) // 2, cy - _text_h(d, num, f_num_big) // 2),
+            num, font=f_num_big, fill=WHITE,
+        )
 
-        y = cy + r + 48
+        y = cy + r + 36
         headline = section.get("title", "")
-        f_head = _font(FONT_BOLD, 64)
-        for line in _wrap(d, headline, f_head, max_w - 50):
+        f_head = _font(FONT_BOLD, 58)
+        title_line = f"{emoji}  {headline}" if emoji else headline
+        for line in _wrap(d, title_line, f_head, max_w - 40):
             lw = _text_w(d, line, f_head)
             tx = (W - lw) // 2
             d.text((tx + 2, y + 2), line, font=f_head, fill=(0, 0, 0))
             d.text((tx, y), line, font=f_head, fill=WHITE)
-            y += _text_h(d, line, f_head) + 14
+            y += _text_h(d, line, f_head) + 12
 
-        card_y = y + 32
-        card_bot = min(card_y + 280, CONTENT_BOTTOM - 100)
-        _draw_rounded_rect_rgba(overlay,
-                                (margin + 16, card_y, W - margin - 16, card_bot),
-                                radius=24,
-                                fill=(255, 255, 255, 24),
-                                outline=_hex_rgba(col, 120), outline_w=2)
-
-        d.text((margin + 36, card_y + 20), "WHY IT MATTERS", font=_font(FONT_BOLD, 24), fill=AMBER)
         detail = section.get("detail", "")
-        dy = card_y + 58
-        for line in _wrap(d, detail, f_body, max_w - 80):
-            lw = _text_w(d, line, f_body)
-            d.text(((W - lw) // 2, dy), line, font=f_body, fill="#E2E8F0")
-            dy += _text_h(d, line, f_body) + 12
+        show_why = section.get("show_why", True) and _detail_differs_from_title(headline, detail)
+        bar_y = CONTENT_BOTTOM - 72
 
-        bar_y = card_bot + 36
-        self._draw_progress_bar(d, overlay, W, bar_y, margin, step_num, n_steps, col)
+        if show_why and detail:
+            card_y = y + 20
+            card_bot = min(card_y + 240, CONTENT_BOTTOM - 130)
+            _draw_rounded_rect_rgba(overlay,
+                                    (margin + 16, card_y, W - margin - 16, card_bot),
+                                    radius=24,
+                                    fill=(255, 255, 255, 28),
+                                    outline=_hex_rgba(col, 140), outline_w=2)
+            f_icon = _font(FONT_BOLD, 44)
+            f_why = _font(FONT_BOLD, 24)
+            why_txt = "WHY IT MATTERS"
+            header = f"{emoji}  {why_txt}"
+            hw = _text_w(d, header, f_why)
+            d.text(((W - hw) // 2, card_y + 20), header, font=f_why, fill=AMBER)
+            dy = card_y + 64
+            f_detail = _font(FONT_REG, 36)
+            for line in _wrap(d, detail, f_detail, max_w - 80):
+                lw = _text_w(d, line, f_detail)
+                d.text(((W - lw) // 2, dy), line, font=f_detail, fill="#F1F5F9")
+                dy += _text_h(d, line, f_detail) + 10
+            bar_y = card_bot + 28
 
-        return Image.alpha_composite(canvas, overlay), bar_y + 20
+        self._draw_progress_bar(
+            d, overlay, W, bar_y, margin, step_num, n_steps, col,
+            label=f"Step {step_num} of {n_steps}",
+        )
+
+        return Image.alpha_composite(canvas, overlay), bar_y + 10
 
     # ── CTA slide ──────────────────────────────────────────────────────────────
 
@@ -554,33 +750,32 @@ class TipVideoBuilder:
         overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d = ImageDraw.Draw(overlay)
 
-        # Accent bar
-        _draw_rounded_rect_rgba(overlay, (margin, 140, margin + 10, 620),
-                                radius=5, fill=_hex_rgba(self.accent, 230))
-
         label = "SAVE THIS"
-        _draw_rounded_rect_rgba(overlay, (margin + 30, 148, margin + 30 + 240, 200),
-                                radius=10, fill=_hex_rgba(self.accent, 220))
-        d.text((margin + 50, 156), label, font=f_label, fill=WHITE)
+        y = CONTENT_TOP + 20
+        y = _draw_centered_pill(overlay, d, label, f_label, y, W,
+                                fill=_hex_rgba(self.accent, 220)) + 16
 
-        f_label2 = _font(FONT_BOLD, 30)
+        save_icon = "🔖"
+        f_save = _font(FONT_BOLD, 56)
+        sw = _text_w(d, save_icon, f_save)
+        d.text(((W - sw) // 2, y), save_icon, font=f_save, fill=WHITE)
+        y += _text_h(d, save_icon, f_save) + 8
 
-        y = 232
-        title_lines = _wrap(d, section.get("title", "Save this for later"), f_big, max_w - 40)
-        for line in title_lines:
-            d.text((margin + 30 + 2, y + 2), line, font=f_big, fill=(0, 0, 0))
-            d.text((margin + 30, y), line, font=f_big, fill=WHITE)
-            y += _text_h(d, line, f_big) + 16
+        y = _draw_wrapped_centered(
+            d, section.get("title", "Save this for later"), f_big,
+            max_w - 40, W, y, fill=WHITE, shadow=True, spacing=16,
+        ) + 8
 
         sub = section.get("subtitle", "")
         if sub:
-            y += 20
-            for line in _wrap(d, sub, f_sub, max_w - 40):
-                lw = _text_w(d, line, f_sub)
-                d.text((margin + 30, y), line, font=f_sub, fill=SLATE)
-                y += _text_h(d, line, f_sub) + 10
+            f_cta_sub = _font(FONT_BOLD, 34)
+            for line in _wrap(d, sub, f_cta_sub, max_w - 40):
+                lw = _text_w(d, line, f_cta_sub)
+                fill = AMBER if "done" in line.lower() or "comment" in line.lower() else WHITE
+                d.text(((W - lw) // 2, y), line, font=f_cta_sub, fill=fill)
+                y += _text_h(d, line, f_cta_sub) + 12
 
-        card_y   = max(y + 44, 660)
+        card_y   = max(y + 32, _content_zone_mid() - 80)
         card_bot = min(card_y + 360, CONTENT_BOTTOM - 40)
         _draw_rounded_rect_rgba(overlay,
                                 (margin, card_y, W - margin, card_bot),
@@ -588,30 +783,45 @@ class TipVideoBuilder:
                                 fill=(255, 255, 255, 22),
                                 outline=_hex_rgba(self.accent, 100), outline_w=2)
 
-        # Header inside card
-        d.text((margin + 28, card_y + 22), "Quick Recap", font=f_small, fill=AMBER)
+        recap_hdr = "Quick Recap"
+        rhw = _text_w(d, recap_hdr, f_small)
+        d.text(((W - rhw) // 2, card_y + 22), recap_hdr, font=f_small, fill=AMBER)
+        div_w = max_w - 40
+        div_x0 = (W - div_w) // 2
         _draw_rounded_rect_rgba(overlay,
-                                (margin + 20, card_y + 60,
-                                 W - margin - 20, card_y + 63),
+                                (div_x0, card_y + 60, div_x0 + div_w, card_y + 63),
                                 radius=2, fill=_hex_rgba(self.accent, 80))
 
         ry = card_y + 78
-        f_rec = _font(FONT_BOLD, 32)
+        f_rec = _font(FONT_BOLD, 38)
+        nf2 = _font(FONT_BOLD, 22)
+        f_em = _font(FONT_BOLD, 34)
         step_sections = [s for s in all_sections if s.get("kind") == "step"]
         for idx, s in enumerate(step_sections):
             col = STEP_COLORS[idx % len(STEP_COLORS)]
+            em = s.get("emoji", STEP_EMOJIS[idx % len(STEP_EMOJIS)])
             txt = s.get("title", "")
-            if len(txt) > 36:
-                txt = txt[:34] + "…"
-            # Bullet circle
+            if len(txt) > 32:
+                txt = txt[:30] + "…"
+            num_s = str(idx + 1)
+            badge_r = 18
+            row_parts_w = (
+                badge_r * 2 + 12
+                + _text_w(d, em, f_em) + 12
+                + _text_w(d, txt, f_rec)
+            )
+            row_x = (W - row_parts_w) // 2
+            cx_badge = row_x + badge_r
             _draw_rounded_rect_rgba(overlay,
-                                    (margin + 28, ry + 4, margin + 54, ry + 30),
-                                    radius=14, fill=_hex_rgba(col, 200))
-            dn = ImageDraw.Draw(overlay)
-            nf2 = _font(FONT_BOLD, 20)
-            dn.text((margin + 33, ry + 6), str(idx + 1), font=nf2, fill=WHITE)
-            d.text((margin + 70, ry), txt, font=f_rec, fill=WHITE)
-            ry += 102
+                                    (cx_badge - badge_r, ry + 2,
+                                     cx_badge + badge_r, ry + 38),
+                                    radius=badge_r, fill=_hex_rgba(col, 220))
+            d.text((cx_badge - _text_w(d, num_s, nf2) // 2, ry + 8),
+                   num_s, font=nf2, fill=WHITE)
+            ex = cx_badge + badge_r + 12
+            d.text((ex, ry + 2), em, font=f_em, fill=WHITE)
+            d.text((ex + _text_w(d, em, f_em) + 12, ry + 4), txt, font=f_rec, fill=WHITE)
+            ry += 112
 
         return Image.alpha_composite(canvas, overlay), card_bot
 
@@ -866,6 +1076,7 @@ class TipVideoBuilder:
             )
 
         topic = tip.get("queue_topic") or tip.get("tip_title", "productivity")
+        tip = apply_priority_fixes(tip, topic)
         print(f"[TipVideoBuilder] Topic: {topic}")
 
         work = tempfile.mkdtemp(prefix="tip_build_")
@@ -888,8 +1099,13 @@ class TipVideoBuilder:
 
             seg_paths, durations = [], []
             for i, sec in enumerate(sections):
-                kw = _topic_to_query(sec.get("title") or topic)
-                print(f"[TipVideoBuilder] Slide {i + 1} background: '{kw}' ...")
+                kind = sec.get("kind", "step")
+                kw = _topic_to_query(
+                    topic if kind == "hook" else f"{topic} {sec.get('title', '')}",
+                    step_index=sec.get("step_num", i),
+                    kind=kind,
+                )
+                print(f"[TipVideoBuilder] Slide {i + 1} ({kind}) background: '{kw}' ...")
                 photo = _fetch_background_image(kw, slide_idx=i)
                 slide = self._render_slide(sec, photo, sections)
                 png = os.path.join(work, f"slide_{i}.png")

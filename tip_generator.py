@@ -32,6 +32,283 @@ def parse_step_count(topic: Optional[str] = None, tip: Optional[Dict] = None) ->
     return 3
 
 
+# At least 5 unique lines per category so padding never clones the last step.
+FALLBACK_STRING_POOLS: Dict[str, List[str]] = {
+    "coding": [
+        "Solve one easy problem daily",
+        "Time yourself under 20 minutes",
+        "Review the optimal solution after",
+        "Redo missed problems without hints",
+        "Explain your approach out loud once",
+    ],
+    "network": [
+        "Message 3 people you admire",
+        "Comment value on their posts first",
+        "Ask one specific question each time",
+        "Follow up within 48 hours",
+        "Offer help before you ask for favors",
+    ],
+    "career": [
+        "Document wins weekly in writing",
+        "Ask your manager for clear targets",
+        "Request a review date in advance",
+        "Quantify impact with numbers or quotes",
+        "Practice your pitch before the meeting",
+    ],
+    "learning": [
+        "Block 20 minutes daily to study",
+        "Build one small project per week",
+        "Teach what you learn out loud",
+        "Quiz yourself without looking at notes",
+        "Ship something tiny every Friday",
+    ],
+    "productivity": [
+        "Pick your top task the night before",
+        "Work in 25-minute focused blocks",
+        "Review what you finished each day",
+        "Batch similar tasks into one block",
+        "Say no to one low-value request daily",
+    ],
+    "ai": [
+        "Use role + task + format in prompts",
+        "Test two prompts, keep the best",
+        "Save your best prompts in a doc",
+        "Chain prompts: feed one output into the next",
+        "Set a weekly review to refine what works",
+    ],
+    "freelance": [
+        "Pick one skill you already have",
+        "Post one offer on a free platform",
+        "Deliver fast and ask for a review",
+        "Raise price after three happy clients",
+        "Reuse one template for every delivery",
+    ],
+}
+
+GENERIC_FALLBACK_STRINGS = [
+    "Apply the smallest version today",
+    "Track one result before tomorrow",
+    "Adjust based on what actually worked",
+    "Remove one blocker that slows you down",
+    "Share one lesson so it sticks",
+]
+
+
+def _step_title_key(step) -> str:
+    if isinstance(step, dict):
+        return (step.get("title") or step.get("caption") or step.get("line") or "").strip().lower()
+    return str(step).strip().lower()
+
+
+def _take_unique_strings(pool: List[str], n: int, extras: Optional[List[str]] = None) -> List[str]:
+    """Return up to n unique strings; never clone the last entry to pad."""
+    seen = set()
+    out: List[str] = []
+    for source in (pool, extras or GENERIC_FALLBACK_STRINGS):
+        for s in source:
+            key = s.strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(s)
+            if len(out) >= n:
+                return out
+    return out
+
+
+def _detail_differs_from_title(title: str, detail: str) -> bool:
+    t, d = title.strip().lower(), detail.strip().lower()
+    return bool(d) and d != t
+
+
+def make_step_detail(title: str, topic: str = "", index: int = 0) -> str:
+    """Concrete one-line benefit when detail is missing or duplicates the headline."""
+    pool = _topic_fallback_pool_key(topic) if topic else None
+    by_pool = {
+        "ai": [
+            "Clear structure stops vague AI answers and saves rework.",
+            "A/B testing prompts finds what actually works for your task.",
+            "A prompt library means you never start from a blank page.",
+            "Chaining steps turns one good output into a full workflow.",
+            "Weekly reviews compound small wins into better results.",
+        ],
+        "freelance": [
+            "Starting with skills you have removes months of prep time.",
+            "One clear offer beats ten vague gigs on every platform.",
+            "Fast delivery plus reviews unlock higher-paying clients.",
+            "Raising rates after proof of results is easier than you think.",
+            "Templates let you deliver in half the time per client.",
+        ],
+        "coding": [
+            "Daily reps build pattern recognition faster than cramming.",
+            "Timing builds interview stamina under real pressure.",
+            "Reviewing optimal solutions teaches tricks books skip.",
+            "Redoing misses without hints exposes real weak spots.",
+            "Explaining aloud catches gaps before the interviewer does.",
+        ],
+        "productivity": [
+            "Choosing tomorrow's task tonight removes morning decision fatigue.",
+            "Short focus blocks beat long sessions you never start.",
+            "A daily review shows wins you'd otherwise forget.",
+            "Batching similar work cuts context-switching waste.",
+            "One polite no protects hours for work that matters.",
+        ],
+        "network": [
+            "Warm intros work better than cold pitches to strangers.",
+            "Thoughtful comments get replies; generic likes do not.",
+            "One specific question beats a vague 'pick your brain' ask.",
+            "A 48-hour follow-up shows you are serious, not spammy.",
+            "Giving value first makes later asks feel natural.",
+        ],
+        "career": [
+            "Written wins are proof when review season arrives.",
+            "Clear targets turn vague feedback into a real plan.",
+            "Booking the review early avoids calendar surprises.",
+            "Numbers and quotes make your impact impossible to ignore.",
+            "Rehearsing once removes ums and rambling in the room.",
+        ],
+        "learning": [
+            "Short daily blocks beat weekend cramming every time.",
+            "Tiny shipped projects teach more than endless tutorials.",
+            "Teaching aloud exposes gaps reading alone hides.",
+            "Self-quizzes reveal what you only thought you knew.",
+            "A Friday ship habit turns learning into visible proof.",
+        ],
+    }
+    if pool and pool in by_pool:
+        opts = by_pool[pool]
+        return opts[index % len(opts)]
+
+    generic = [
+        "Most beginners skip this — doing it today gives you a real edge.",
+        "One small action beats reading ten more articles about the topic.",
+        "You'll feel the difference the same day you try it once.",
+        "This removes the biggest blocker people hit on step one.",
+        "Stack it with the previous tip and results compound fast.",
+    ]
+    return generic[index % len(generic)]
+
+
+def enrich_step_details(steps: List[Dict], topic: str = "") -> List[Dict]:
+    """Ensure each step has a detail line that adds info beyond the title."""
+    emojis = SLIDE_EMOJIS
+    out = []
+    for i, step in enumerate(steps):
+        row = dict(step)
+        title = (
+            row.get("title") or row.get("caption") or row.get("line") or f"Step {i + 1}"
+        ).strip()
+        detail = (row.get("detail") or "").strip()
+        line = (row.get("line") or "").strip()
+        if not _detail_differs_from_title(title, detail) and _detail_differs_from_title(title, line):
+            detail = line
+        if not _detail_differs_from_title(title, detail):
+            detail = make_step_detail(title, topic, i)
+            row["detail"] = detail
+            row["line"] = detail
+        if not row.get("emoji"):
+            row["emoji"] = emojis[(i + 1) % len(emojis)]
+        voice = (row.get("voice") or "").strip()
+        if not voice or voice.lower() == title.lower():
+            row["voice"] = f"{title}. {detail}"
+        out.append(row)
+    return out
+
+
+def _strings_to_step_rows(steps: List[str], topic: str = "") -> List[Dict]:
+    rows = []
+    for i, s in enumerate(steps):
+        detail = make_step_detail(s, topic, i)
+        rows.append({
+            "title": s,
+            "detail": detail,
+            "caption": s,
+            "line": detail,
+            "voice": f"Step {i + 1}: {s}. {detail}",
+        })
+    return enrich_step_details(rows, topic)
+
+
+def _topic_has_keywords(t: str, keywords: tuple) -> bool:
+    """Match keywords; short tokens like 'ai' use word boundaries to avoid false hits."""
+    for k in keywords:
+        if k == "ai":
+            if re.search(r"\bai\b", t):
+                return True
+        elif k in t:
+            return True
+    return False
+
+
+# More specific topics first — e.g. "side hustles with AI" → freelance, not prompting.
+_TOPIC_POOL_MATCH_RULES = (
+    ("coding", ("cod", "interview", "leetcode", "algorithm")),
+    ("network", ("network", "connect", "linkedin")),
+    ("career", ("promot", "raise", "salary", "job", "career")),
+    ("learning", ("learn", "skill", "study", "python", "data")),
+    ("productivity", ("product", "focus", "habit", "morning", "time")),
+    ("freelance", ("freelan", "hustle", "side hustle", "side", "income", "money")),
+    ("ai", ("chatgpt", "prompt", "tool", "ai")),
+)
+
+
+def _topic_fallback_pool_key(topic: str) -> Optional[str]:
+    t = topic.lower()
+    for pool_key, keywords in _TOPIC_POOL_MATCH_RULES:
+        if _topic_has_keywords(t, keywords):
+            return pool_key
+    return None
+
+
+def topic_fallback_string_pool(topic: str) -> List[str]:
+    key = _topic_fallback_pool_key(topic)
+    if key:
+        return list(FALLBACK_STRING_POOLS[key])
+    return list(GENERIC_FALLBACK_STRINGS)
+
+
+def dedupe_step_rows(steps: List[Dict], alternates: Optional[List[Dict]] = None) -> List[Dict]:
+    """Replace duplicate step titles using alternates from the topic pool."""
+    seen = set()
+    result: List[Dict] = []
+    alt = list(alternates or [])
+    alt_i = 0
+    for step in steps:
+        row = dict(step) if isinstance(step, dict) else {
+            "title": str(step),
+            "detail": str(step),
+            "caption": str(step),
+            "line": str(step),
+            "voice": f"Step {len(result) + 1}: {step}",
+        }
+        key = _step_title_key(row)
+        if key and key in seen:
+            replaced = False
+            while alt_i < len(alt):
+                cand = dict(alt[alt_i])
+                alt_i += 1
+                ck = _step_title_key(cand)
+                if ck and ck not in seen:
+                    row = cand
+                    key = ck
+                    replaced = True
+                    break
+            if not replaced:
+                n = len(result) + 1
+                row = {
+                    "title": f"Tip {n}",
+                    "detail": "Apply one small action from this topic today.",
+                    "caption": f"Tip {n}",
+                    "line": "Apply one small action from this topic today.",
+                    "voice": f"Tip {n}. Apply one small action from this topic today.",
+                }
+                key = _step_title_key(row)
+        if key:
+            seen.add(key)
+        result.append(row)
+    return result
+
+
 def ensure_tip_steps(tip: Dict, topic: Optional[str] = None) -> Dict:
     """Pad or trim steps so video matches topic count (e.g. 5 tips, not 3)."""
     topic = (topic or tip.get("queue_topic") or tip.get("tip_title") or "").strip()
@@ -39,7 +316,7 @@ def ensure_tip_steps(tip: Dict, topic: Optional[str] = None) -> Dict:
     steps = list(tip.get("steps") or [])
 
     if len(steps) < n and topic:
-        extra = TipGenerator._build_extra_steps(topic, len(steps), n)
+        extra = TipGenerator._build_extra_steps(topic, steps, n)
         steps.extend(extra)
 
     while len(steps) < n:
@@ -52,9 +329,94 @@ def ensure_tip_steps(tip: Dict, topic: Optional[str] = None) -> Dict:
             "voice": f"Tip {i + 1}. Apply this step today for faster results.",
         })
 
-    tip["steps"] = steps[:n]
+    steps = steps[:n]
+    if topic:
+        alt_strings = _take_unique_strings(topic_fallback_string_pool(topic), n)
+        alternates = _strings_to_step_rows(alt_strings, topic)
+        steps = dedupe_step_rows(steps, alternates)
+    else:
+        steps = dedupe_step_rows(steps)
+
+    tip["steps"] = enrich_step_details(steps, topic)
     tip["step_count"] = n
     tip["hook_subtitle"] = tip.get("hook_subtitle") or f"Watch all {n} tips in this Short"
+    return tip
+
+
+_GENERIC_CTAS = {
+    "save this and try it today",
+    "save this for later",
+    "save this",
+}
+
+
+def apply_priority_fixes(tip: Dict, topic: Optional[str] = None) -> Dict:
+    """
+    Single entry point for all priority content fixes before video build:
+    1. Correct step count with unique steps (no clones)
+    2. Topic-specific template routing (side hustle before generic AI)
+    3. Unique detail / WHY IT MATTERS text (never a copy of the headline)
+    4. Topic-specific CTA line
+    """
+    topic = (topic or tip.get("queue_topic") or tip.get("tip_title") or "").strip()
+    tip = ensure_tip_steps(tip, topic)
+    n = parse_step_count(topic, tip)
+    steps = list(tip.get("steps") or [])
+    seen_titles: set = set()
+    seen_details: set = set()
+    fixes: List[str] = []
+
+    for i, step in enumerate(steps):
+        row = dict(step)
+        title = (
+            row.get("title") or row.get("caption") or row.get("line") or f"Step {i + 1}"
+        ).strip()
+        tkey = title.lower()
+        detail = (row.get("detail") or "").strip()
+        line = (row.get("line") or "").strip()
+        if not _detail_differs_from_title(title, detail) and _detail_differs_from_title(title, line):
+            detail = line
+
+        if tkey in seen_titles:
+            pool = topic_fallback_string_pool(topic)
+            for alt_title in pool:
+                if alt_title.lower() not in seen_titles:
+                    title = alt_title
+                    tkey = title.lower()
+                    detail = make_step_detail(title, topic, i)
+                    fixes.append(f"step {i + 1}: duplicate title")
+                    break
+
+        if not _detail_differs_from_title(title, detail):
+            detail = make_step_detail(title, topic, i)
+            fixes.append(f"step {i + 1}: detail matched title")
+
+        dkey = detail.lower()
+        if dkey in seen_details:
+            detail = make_step_detail(title, topic, i + 3)
+            fixes.append(f"step {i + 1}: duplicate detail")
+
+        row["title"] = title
+        row["detail"] = detail
+        row["line"] = detail
+        if not (row.get("voice") or "").strip() or row["voice"].strip().lower() == title.lower():
+            row["voice"] = f"{title}. {detail}"
+        seen_titles.add(tkey)
+        seen_details.add(detail.lower())
+        steps[i] = row
+
+    tip["steps"] = enrich_step_details(steps, topic)
+    tip["step_count"] = n
+
+    cta = (tip.get("cta_line1") or "").strip()
+    if not cta or cta.lower() in _GENERIC_CTAS:
+        short = topic.rstrip("?")[:48] if topic else "this topic"
+        tip["cta_line1"] = f"Save these {n} tips on {short}"
+        fixes.append("cta: topic-specific line")
+
+    if fixes:
+        print(f"[TipGenerator] Priority fixes applied: {', '.join(fixes)}")
+
     return tip
 
 from google import genai
@@ -194,21 +556,39 @@ class TipGenerator:
         Path(QUEUE_OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def _build_extra_steps(topic: str, have: int, need: int) -> List[Dict]:
+    def _build_extra_steps(topic: str, existing: List[Dict], need: int) -> List[Dict]:
         """Build missing steps when AI returned fewer than the topic number."""
-        fb = TipGenerator()._fallback_tip(topic)
-        pool = fb.get("steps") or []
+        have = len(existing)
+        seen = {_step_title_key(s) for s in existing if _step_title_key(s)}
+        n = parse_step_count(topic)
+        pool_key = _topic_fallback_pool_key(topic)
+        if pool_key:
+            strings = _take_unique_strings(
+                FALLBACK_STRING_POOLS[pool_key], n, GENERIC_FALLBACK_STRINGS,
+            )
+            pool = _strings_to_step_rows(strings, topic)
+        else:
+            fb = TipGenerator()._fallback_tip(topic)
+            pool = fb.get("steps") or []
         out = []
-        for i in range(have, need):
-            if i < len(pool):
-                out.append(dict(pool[i]))
-            else:
-                out.append({
-                    "title": f"Tip {i + 1}",
-                    "detail": "One more key action from this topic.",
-                    "voice": f"Tip {i + 1}. One more key action from this topic.",
-                    "line": "One more key action from this topic.",
-                })
+        for step in pool:
+            if len(existing) + len(out) >= need:
+                break
+            key = _step_title_key(step)
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            out.append(dict(step))
+        while len(existing) + len(out) < need:
+            i = len(existing) + len(out)
+            out.append({
+                "title": f"Tip {i + 1}",
+                "detail": "One more key action from this topic.",
+                "voice": f"Tip {i + 1}. One more key action from this topic.",
+                "line": "One more key action from this topic.",
+                "caption": f"Tip {i + 1}",
+            })
         return out
 
     def _load_history(self) -> List[str]:
@@ -251,49 +631,14 @@ class TipGenerator:
             hook = topic.strip()[:80]
             t = topic.lower()
 
-            # Topic-aware step templates
-            if any(k in t for k in ("cod", "interview", "leetcode", "algorithm")):
-                steps = [
-                    "Solve one easy problem daily",
-                    "Time yourself under 20 minutes",
-                    "Review the optimal solution after",
-                ]
-            elif any(k in t for k in ("network", "connect", "linkedin")):
-                steps = [
-                    "Message 3 people you admire",
-                    "Comment value on their posts first",
-                    "Ask one specific question each time",
-                ]
-            elif any(k in t for k in ("promot", "raise", "salary", "job", "career")):
-                steps = [
-                    "Document wins weekly in writing",
-                    "Ask your manager for clear targets",
-                    "Request a review date in advance",
-                ]
-            elif any(k in t for k in ("learn", "skill", "study", "python", "data")):
-                steps = [
-                    "Block 20 minutes daily to study",
-                    "Build one small project per week",
-                    "Teach what you learn out loud",
-                ]
-            elif any(k in t for k in ("product", "focus", "habit", "morning", "time")):
-                steps = [
-                    "Pick your top task the night before",
-                    "Work in 25-minute focused blocks",
-                    "Review what you finished each day",
-                ]
-            elif any(k in t for k in ("ai", "chatgpt", "prompt", "tool")):
-                steps = [
-                    "Use role + task + format in prompts",
-                    "Test two prompts, keep the best",
-                    "Save your best prompts in a doc",
-                ]
-            elif any(k in t for k in ("freelan", "side", "income", "money")):
-                steps = [
-                    "Pick one skill you already have",
-                    "Post one offer on a free platform",
-                    "Deliver fast and ask for a review",
-                ]
+            # Topic-aware step templates (pools have 5+ unique lines; padding never clones)
+            pool_key = _topic_fallback_pool_key(topic)
+            if pool_key:
+                n = parse_step_count(topic)
+                steps = _take_unique_strings(
+                    FALLBACK_STRING_POOLS[pool_key], n, GENERIC_FALLBACK_STRINGS,
+                )
+                step_rows = _strings_to_step_rows(steps, topic)
             elif re.search(r"\b(apps?|tools?|software|platforms?)\b", t):
                 n = parse_step_count(topic)
                 pool = [
@@ -315,7 +660,7 @@ class TipGenerator:
                         "line": detail,
                         "voice": f"App {i + 1}: {name}. {detail}",
                     })
-                steps = step_dicts
+                step_rows = step_dicts
             else:
                 n = parse_step_count(topic)
                 words = [w for w in title.split() if len(w) > 3][:3]
@@ -327,30 +672,13 @@ class TipGenerator:
                     (f"Remove one {noun} blocker", f"Delete or automate the task that slows you down"),
                     (f"Share one {noun} lesson", f"Teaching others locks in what you learned"),
                 ]
-                steps = [
+                step_rows = [
                     {"title": t[0], "detail": t[1], "caption": t[0], "line": t[1],
                      "voice": f"Step {i + 1}: {t[0]}. {t[1]}"}
                     for i, t in enumerate(templates[:n])
                 ]
 
-            n = parse_step_count(topic)
-            if steps and isinstance(steps[0], str):
-                while len(steps) < n:
-                    steps.append(steps[-1])
-                steps = steps[:n]
-                step_rows = [
-                    {
-                        "title": s,
-                        "detail": s,
-                        "caption": s,
-                        "line": s,
-                        "voice": f"Step {i + 1}: {s}",
-                    }
-                    for i, s in enumerate(steps)
-                ]
-            else:
-                step_rows = steps[:n]
-
+            step_rows = step_rows[: parse_step_count(topic)]
             n = len(step_rows)
             tip = {
                 "slide_emojis": SLIDE_EMOJIS,
