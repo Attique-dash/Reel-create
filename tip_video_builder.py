@@ -1,27 +1,33 @@
 """
-Build 9:16 tip Shorts — fixed 28s timing, branded slides, burned-in captions, TTS.
-Fixes: emoji rendering (PIL can't render Unicode emoji on Linux → replaced with drawn icons),
-       empty slide space (rich visual layout with cards, decorators, body content),
-       duplicate guard (topic hash check before generation).
+Build 9:16 tip Shorts — modern design with:
+  - Unsplash photo backgrounds (topic-matched, no API key needed)
+  - Glassmorphism frosted-glass cards
+  - Full-bleed layout with gradient overlays
+  - Ken Burns per-slide zoom
+  - Fixed audio timing, caption compositing, and event-loop issues
 """
 import asyncio
+import io
 import os
 import shutil
 import subprocess
 import tempfile
+import urllib.request
+import urllib.parse
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from config import (
     VIDEO_WIDTH, VIDEO_HEIGHT, TTS_VOICE, QUEUE_OUTPUT_FOLDER,
     TIP_BRAND_COLOR, CHANNEL_NAME, CHANNEL_CTA, TIP_XFADE_DURATION,
     BACKGROUND_MUSIC_PATH, CHANNEL_LOGO_PATH, TIP_BG_COLOR, TIP_TEXT_COLOR,
-    TIP_SLIDE_DURATIONS, TIP_TOTAL_DURATION, TIP_FPS,
+    TIP_TOTAL_DURATION, TIP_FPS,
 )
+from tip_generator import parse_step_count
 
-# ── Font paths (bold + regular, cross-platform) ──────────────────────────────
+# ── Font paths ─────────────────────────────────────────────────────────────────
 FONT_BOLD = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
@@ -32,29 +38,60 @@ FONT_REG = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/Library/Fonts/Arial.ttf",
     "C:/Windows/Fonts/arial.ttf",
 ]
+FONT_EXTRA = [
+    "/System/Library/Fonts/SFNS.ttf",
+    "/System/Library/Fonts/Supplemental/Helvetica Neue.ttf",
+]
 
-# Icon labels replacing emoji (PIL-renderable ASCII/Latin text)
-STEP_ICON_LABELS = ["01", "02", "03"]
-SLIDE_ICON_LABELS = ["HOOK", "STEP", "STEP", "STEP", "SAVE"]
+# ── Design tokens ──────────────────────────────────────────────────────────────
+GLASS_BG        = (8, 20, 48, 200)      # semi-transparent dark navy (RGBA)
+GLASS_BORDER    = (255, 140, 0, 100)    # amber border at low alpha
+OVERLAY_DARK    = (5, 10, 30, 180)      # full-slide scrim
+CAPTION_BG      = (0, 0, 0, 160)
+AMBER           = "#FF8C00"
+WHITE           = "#FFFFFF"
+SLATE           = "#CBD5E1"
+STEP_COLORS     = ["#FF8C00", "#FF6B35", "#FF4757", "#9B59B6", "#3498DB"]
 
-# Colour for step-card background strips
-CARD_BG = (10, 40, 80)          # slightly lighter than main bg
-ACCENT_LIGHT = (255, 165, 50)   # warm amber
-DIVIDER = (255, 140, 0, 80)     # translucent amber
+# Layout zones (9:16) — keeps caption off cards/dots
+TOP_BAR_H       = 110
+BOTTOM_STRIP_H  = 100
+CAPTION_H       = 170
+CONTENT_TOP     = 130
+CONTENT_BOTTOM  = VIDEO_HEIGHT - BOTTOM_STRIP_H - CAPTION_H - 30
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+_font_warned = False
+
 
 def _font(paths: List[str], size: int) -> ImageFont.FreeTypeFont:
-    for p in paths:
+    global _font_warned
+    for p in paths + FONT_EXTRA:
         if os.path.exists(p):
             try:
                 return ImageFont.truetype(p, size)
             except OSError:
                 continue
-    return ImageFont.load_default()
+    for p in FONT_BOLD + FONT_REG:
+        if os.path.exists(p):
+            try:
+                return ImageFont.truetype(p, size)
+            except OSError:
+                continue
+    if not _font_warned:
+        print("[TipVideoBuilder] Warning: no TTF fonts found — install DejaVu or Arial")
+        _font_warned = True
+    # Bitmap default is ~8px; scale via larger truetype on Linux if available
+    try:
+        return ImageFont.truetype("DejaVuSans.ttf", size)
+    except OSError:
+        return ImageFont.load_default()
 
 
 def _hex_rgb(h: str) -> Tuple[int, int, int]:
@@ -62,7 +99,12 @@ def _hex_rgb(h: str) -> Tuple[int, int, int]:
     return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
-def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> List[str]:
+def _hex_rgba(h: str, a: int = 255) -> Tuple[int, int, int, int]:
+    r, g, b = _hex_rgb(h)
+    return (r, g, b, a)
+
+
+def _wrap(draw, text: str, font, max_w: int) -> List[str]:
     words = text.split()
     lines, cur = [], ""
     for w in words:
@@ -78,482 +120,534 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> List[str]:
     return lines or [text]
 
 
-def _text_h(draw: ImageDraw.ImageDraw, text: str, font) -> int:
+def _text_h(draw, text: str, font) -> int:
     bb = draw.textbbox((0, 0), text, font=font)
     return bb[3] - bb[1]
 
 
-def _text_w(draw: ImageDraw.ImageDraw, text: str, font) -> int:
+def _text_w(draw, text: str, font) -> int:
     bb = draw.textbbox((0, 0), text, font=font)
     return bb[2] - bb[0]
 
 
-def _solid_bg(color: str) -> Image.Image:
-    img = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), _hex_rgb(color))
-    return img
+def _draw_rounded_rect_rgba(img: Image.Image, xy: Tuple, radius: int,
+                             fill=None, outline=None, outline_w: int = 3):
+    """Draw a rounded rect with RGBA fill onto an RGBA image using paste."""
+    x0, y0, x1, y1 = xy
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    if fill:
+        d.rounded_rectangle([0, 0, w - 1, h - 1], radius=radius, fill=fill)
+    if outline:
+        d.rounded_rectangle([0, 0, w - 1, h - 1], radius=radius,
+                             outline=outline, width=outline_w)
+    img.paste(layer, (x0, y0), layer)
 
 
-def _gradient_bg(top_hex: str, bottom_hex: str) -> Image.Image:
-    """Vertical gradient background."""
-    img = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT))
-    top = _hex_rgb(top_hex)
-    bot = _hex_rgb(bottom_hex)
-    for y in range(VIDEO_HEIGHT):
-        t = y / VIDEO_HEIGHT
-        r = int(top[0] + (bot[0] - top[0]) * t)
-        g = int(top[1] + (bot[1] - top[1]) * t)
-        b = int(top[2] + (bot[2] - top[2]) * t)
-        for x in range(VIDEO_WIDTH):
-            img.putpixel((x, y), (r, g, b))
-    return img
+def _gradient_overlay(size: Tuple[int, int],
+                       top_rgba=(0, 0, 0, 0),
+                       bot_rgba=(0, 0, 0, 220)) -> Image.Image:
+    """Vertical gradient RGBA image."""
+    W, H = size
+    grad = Image.new("RGBA", (W, H))
+    for y in range(H):
+        t = y / max(H - 1, 1)
+        r = int(top_rgba[0] + (bot_rgba[0] - top_rgba[0]) * t)
+        g = int(top_rgba[1] + (bot_rgba[1] - top_rgba[1]) * t)
+        b = int(top_rgba[2] + (bot_rgba[2] - top_rgba[2]) * t)
+        a = int(top_rgba[3] + (bot_rgba[3] - top_rgba[3]) * t)
+        grad.paste((r, g, b, a), [0, y, W, y + 1])
+    return grad
 
 
-def _draw_rounded_rect(
-    draw: ImageDraw.ImageDraw,
-    xy: Tuple[int, int, int, int],
-    radius: int,
-    fill=None,
-    outline=None,
-    width: int = 2,
-):
-    draw.rounded_rectangle(xy, radius=radius, fill=fill, outline=outline, width=width)
+# ── Image fetching (free, no API key) ─────────────────────────────────────────
+
+def _fetch_background_image(query: str, w: int = 1080, h: int = 1920,
+                            slide_idx: int = 0) -> Optional[Image.Image]:
+    """
+    Topic-matched stock photo (Picsum seed + LoremFlickr keyword fallbacks).
+    source.unsplash.com was retired; these work without an API key.
+    """
+    keywords = _topic_to_query(query)
+    seed = abs(hash(f"{keywords}-{slide_idx}")) % 1_000_000
+    tag_path = urllib.parse.quote(keywords.replace(" ", ","), safe=",")
+    urls = [
+        f"https://picsum.photos/seed/{seed}/{w}/{h}",
+        f"https://loremflickr.com/{w}/{h}/{tag_path}",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; TipVideoBuilder/1.0)"}
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                data = resp.read()
+            if len(data) < 5000:
+                continue
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+            return img.resize((w, h), Image.LANCZOS)
+        except Exception:
+            continue
+    print(f"[TipVideoBuilder] Photo fetch failed for '{keywords}' — gradient bg")
+    return None
 
 
-def _draw_icon_circle(
-    draw: ImageDraw.ImageDraw,
-    cx: int, cy: int, r: int,
-    label: str, accent: str,
-    font,
-):
-    """Draw a filled circle with a text label — replaces emoji."""
-    acc = _hex_rgb(accent)
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=acc)
-    tw = _text_w(draw, label, font)
-    th = _text_h(draw, label, font)
-    draw.text((cx - tw // 2, cy - th // 2 - 2), label, font=font, fill="#FFFFFF")
+def _topic_to_query(topic: str) -> str:
+    """Extract 2-3 visual keywords from a topic string."""
+    stopwords = {"how", "to", "the", "a", "an", "in", "on", "at", "for",
+                 "of", "and", "or", "is", "are", "you", "your", "my", "i",
+                 "that", "this", "with", "without", "when", "why", "what",
+                 "5", "3", "10", "top", "best", "tips", "ways", "most"}
+    words = [w.lower().strip(",.?!") for w in topic.split()]
+    keywords = [w for w in words if w not in stopwords and len(w) > 2][:3]
+    return " ".join(keywords) if keywords else "productivity office"
 
 
-def _draw_decorative_dots(draw: ImageDraw.ImageDraw, y: int, accent: str):
-    """Small dot row as visual separator."""
-    acc = _hex_rgb(accent)
-    for i in range(5):
-        x = VIDEO_WIDTH // 2 - 40 + i * 20
-        draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=acc + (180,) if len(acc) == 3 else acc)
+def _make_base_bg(photo: Optional[Image.Image], W: int, H: int,
+                  bg_hex: str) -> Image.Image:
+    """Photo (blurred, darkened) or gradient fallback — always W×H."""
+    if photo:
+        bg = photo.copy().convert("RGBA").resize((W, H), Image.LANCZOS)
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=4))
+        # Dark scrim overlay — bottom heavier for readability
+        scrim = _gradient_overlay((W, H),
+                                  top_rgba=(5, 10, 30, 160),
+                                  bot_rgba=(5, 10, 30, 230))
+        bg = Image.alpha_composite(bg, scrim)
+        return bg.convert("RGBA")
+    else:
+        # Gradient fallback
+        r, g, b = _hex_rgb(bg_hex)
+        dr, dg, db = max(r - 30, 0), max(g - 30, 0), max(b - 30, 0)
+        grad = _gradient_overlay((W, H),
+                                 top_rgba=(r, g, b, 255),
+                                 bot_rgba=(dr, dg, db, 255))
+        return grad
 
 
-def _draw_horizontal_rule(
-    draw: ImageDraw.ImageDraw, y: int, margin: int, accent: str, alpha: int = 120
-):
-    col = _hex_rgb(accent)
-    draw.rectangle([(margin, y), (VIDEO_WIDTH - margin, y + 3)], fill=col)
-
-
-# ── Main builder class ────────────────────────────────────────────────────────
+# ── Main builder ───────────────────────────────────────────────────────────────
 
 class TipVideoBuilder:
     def __init__(self, voice: Optional[str] = None):
         self.voice = voice or TTS_VOICE
-        self.bg_top = TIP_BG_COLOR          # dark navy
-        self.bg_bot = "#061428"             # slightly darker
-        self.accent = TIP_BRAND_COLOR       # amber
-        self.text_color = TIP_TEXT_COLOR    # white
-        self.slide_durations = list(TIP_SLIDE_DURATIONS)
+        self.bg_hex = TIP_BG_COLOR
+        self.accent = AMBER
         self.xfade = TIP_XFADE_DURATION
         Path(QUEUE_OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
 
-    # ── Section builder ───────────────────────────────────────────────────────
+    def _durations_for(self, num_steps: int) -> List[float]:
+        """Split ~28s across hook + N steps + CTA."""
+        hook, cta = 4.0, 4.2
+        budget = TIP_TOTAL_DURATION - hook - cta
+        per = round(budget / max(num_steps, 1), 2)
+        return [hook] + [per] * num_steps + [cta]
+
+    def _normalize_step(self, step: Dict, index: int, total: int) -> Dict:
+        headline = (
+            step.get("title") or step.get("caption")
+            or step.get("line") or f"Step {index + 1}"
+        ).strip()
+        detail = (
+            step.get("detail") or step.get("line")
+            or step.get("subtitle") or ""
+        ).strip()
+        if not detail or detail.lower() == headline.lower():
+            detail = step.get("body", "").strip()
+        voice = (step.get("voice") or "").strip()
+        if not voice:
+            voice = f"{headline}. {detail}" if detail else headline
+        cap = (step.get("caption") or "").strip()
+        if cap.lower() == headline.lower() or cap.lower() == detail.lower():
+            cap = ""
+        return {
+            "headline": headline,
+            "detail": detail or headline,
+            "voice": voice,
+            "caption": cap,
+        }
 
     def _sections_from_tip(self, tip: Dict) -> List[Dict]:
-        """Five slides: hook + 3 steps + CTA."""
-        hook_caption = tip.get("hook", "")
-        hook_voice   = tip.get("hook_voice") or hook_caption
-        hook_subtitle = tip.get("hook_subtitle", "")
+        topic = tip.get("queue_topic") or tip.get("tip_title", "")
+        n_steps = parse_step_count(topic, tip)
+        durations = self._durations_for(n_steps)
+        di = 0
+
+        hook_title = tip.get("hook", "")
+        hook_voice = tip.get("hook_voice") or hook_title
+        hook_sub = tip.get("hook_subtitle", "") or f"Watch all {n_steps} tips below"
 
         sections = [{
-            "kind":     "hook",
-            "label":    "TODAY'S TIP",
-            "title":    hook_caption,
-            "subtitle": hook_subtitle,
-            "caption":  hook_caption,
-            "voice":    hook_voice,
-            "duration": self.slide_durations[0],
+            "kind":      "hook",
+            "label":     "TODAY'S TIP",
+            "title":     hook_title,
+            "subtitle":  hook_sub,
+            "caption":   "",
+            "voice":     hook_voice,
+            "duration":  durations[di],
+            "num_steps": n_steps,
         }]
+        di += 1
 
-        steps = tip.get("steps") or []
-        for i in range(3):
-            if i < len(steps):
-                step = steps[i]
-                cap  = step.get("caption") or step.get("line") or step.get("title", "")
-                voice = step.get("voice") or cap
-                title = step.get("title") or cap
-            else:
-                lines = tip.get("on_screen_lines") or []
-                cap   = lines[i] if i < len(lines) else f"Step {i + 1}"
-                voice = cap
-                title = cap
+        steps = (tip.get("steps") or [])[:n_steps]
+        while len(steps) < n_steps:
+            steps.append({"title": f"Step {len(steps) + 1}", "detail": "", "voice": ""})
+
+        for i, raw in enumerate(steps):
+            norm = self._normalize_step(raw, i, n_steps)
             sections.append({
-                "kind":     "step",
-                "step_num": i + 1,
-                "label":    f"STEP {i + 1}",
-                "title":    cap,
-                "subtitle": title if title != cap else "",
-                "caption":  cap,
-                "voice":    voice,
-                "duration": self.slide_durations[i + 1],
+                "kind":      "step",
+                "step_num":  i + 1,
+                "num_steps": n_steps,
+                "label":     f"STEP {i + 1} / {n_steps}",
+                "title":     norm["headline"],
+                "detail":    norm["detail"],
+                "caption":   norm["caption"],
+                "voice":     norm["voice"],
+                "duration":  durations[di],
+                "color":     STEP_COLORS[i % len(STEP_COLORS)],
             })
+            di += 1
 
         cta_line1 = tip.get("cta_line1", "Save this for later")
         cta_line2 = tip.get("cta_line2", "Comment 'DONE' when you try it!")
         cta_voice = tip.get("cta_voice") or f"{cta_line1}. {cta_line2}"
-
         sections.append({
-            "kind":     "cta",
-            "label":    "ACTION",
-            "title":    cta_line1,
-            "subtitle": cta_line2,
-            "caption":  f"{cta_line1}\n{cta_line2}",
-            "voice":    cta_voice,
-            "duration": self.slide_durations[4],
+            "kind":      "cta",
+            "label":     "SAVE THIS",
+            "title":     cta_line1,
+            "subtitle":  cta_line2,
+            "caption":   "",
+            "voice":     cta_voice,
+            "duration":  durations[di],
+            "num_steps": n_steps,
         })
         return sections
 
-    # ── Slide renderer ────────────────────────────────────────────────────────
+    # ── Slide renderer ─────────────────────────────────────────────────────────
 
-    def _render_slide(self, section: Dict, progress: str, total_steps: int = 3,
-                  sections: list = None) -> Image.Image:
+    def _draw_progress_bar(self, draw, overlay, W: int, y: int, margin: int,
+                           current: int, total: int, accent: str):
+        """Segmented progress bar (no slide counter text)."""
+        bar_w = W - 2 * margin
+        seg_w = (bar_w - (total - 1) * 8) // total
+        x = margin
+        for i in range(total):
+            fill = _hex_rgba(accent, 220) if i < current else (255, 255, 255, 50)
+            _draw_rounded_rect_rgba(overlay, (x, y, x + seg_w, y + 10), radius=5, fill=fill)
+            x += seg_w + 8
+
+    def _render_slide(self, section: Dict, photo: Optional[Image.Image],
+                      sections: List[Dict]) -> Image.Image:
         W, H   = VIDEO_WIDTH, VIDEO_HEIGHT
-        margin = 72
+        margin = 68
         max_w  = W - 2 * margin
         kind   = section.get("kind", "hook")
 
-        # ── Background ──
-        img  = _gradient_bg(self.bg_top, self.bg_bot)
-        draw = ImageDraw.Draw(img, "RGBA")
+        # Base background (RGBA)
+        base = _make_base_bg(photo, W, H, self.bg_hex)
+        if base.mode != "RGBA":
+            base = base.convert("RGBA")
 
-        # Subtle diagonal stripe overlay (decorative)
-        stripe_col = (255, 255, 255, 6)
-        for sx in range(-H, W, 120):
-            draw.polygon(
-                [(sx, 0), (sx + 80, 0), (sx + 80 + H, H), (sx + H, H)],
-                fill=stripe_col,
-            )
+        canvas = base.copy()
 
-        # ── Fonts ──
-        f_channel  = _font(FONT_REG,  30)
-        f_progress = _font(FONT_BOLD, 28)
-        f_label    = _font(FONT_BOLD, 28)
-        f_title    = _font(FONT_BOLD, 68)
-        f_subtitle = _font(FONT_REG,  42)
-        f_body     = _font(FONT_REG,  40)
-        f_caption  = _font(FONT_BOLD, 34)
-        f_icon     = _font(FONT_BOLD, 30)
-        f_cta_bar  = _font(FONT_REG,  32)
-        f_step_num = _font(FONT_BOLD, 38)
+        # Fonts
+        f_chan  = _font(FONT_BOLD, 28)
+        f_label = _font(FONT_BOLD, 30)
+        f_big   = _font(FONT_BOLD, 72)
+        f_med   = _font(FONT_BOLD, 52)
+        f_sub   = _font(FONT_REG,  42)
+        f_body  = _font(FONT_REG,  38)
+        f_cap   = _font(FONT_BOLD, 34)
+        f_cta   = _font(FONT_REG,  30)
+        f_num   = _font(FONT_BOLD, 44)
+        f_small = _font(FONT_BOLD, 26)
 
-        white = self.text_color    # "#FFFFFF"
-        amber = self.accent        # "#FF8C00"
+        canvas = canvas.resize((W, H), Image.LANCZOS).convert("RGBA")
 
-        # ── Top bar: channel badge + progress ──
-        # Channel badge
-        badge = CHANNEL_NAME
-        bw = _text_w(draw, badge, f_channel)
-        bh = _text_h(draw, badge, f_channel)
-        _draw_rounded_rect(draw, (margin, 48, margin + bw + 28, 48 + bh + 18),
-                           radius=10, fill=(15, 35, 60))
-        draw.text((margin + 14, 54), badge, font=f_channel, fill="#94a3b8")
+        top_bar = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        _draw_rounded_rect_rgba(top_bar, (margin, 18, margin + 200, 82),
+                                radius=12, fill=(255, 255, 255, 25),
+                                outline=(255, 255, 255, 50))
+        td = ImageDraw.Draw(top_bar)
+        td.text((margin + 16, 28), CHANNEL_NAME, font=f_chan, fill=WHITE)
+        canvas = Image.alpha_composite(canvas, top_bar.convert("RGBA"))
 
-        # Progress badge (e.g. "2/5")
-        pb = _text_w(draw, progress, f_progress)
-        ph = _text_h(draw, progress, f_progress)
-        px = W - margin - pb - 24
-        _draw_rounded_rect(draw, (px, 48, px + pb + 24, 48 + ph + 18),
-                           radius=10, fill=(15, 35, 60),
-                           outline=amber, width=2)
-        draw.text((px + 12, 54), progress, font=f_progress, fill=amber)
-
-        # ── Logo (if exists) ──
+        # ── Logo ───────────────────────────────────────────────────────────────
         if CHANNEL_LOGO_PATH and os.path.exists(CHANNEL_LOGO_PATH):
             try:
                 logo = Image.open(CHANNEL_LOGO_PATH).convert("RGBA")
-                logo.thumbnail((90, 90))
-                img.paste(logo, (W - margin - 90, 120), logo)
+                logo.thumbnail((80, 80))
+                canvas.paste(logo, (W - margin - 80, 130), logo)
             except Exception:
                 pass
 
-        # ── KIND-SPECIFIC content ──────────────────────────────────────────
+        # ── Kind-specific content ──────────────────────────────────────────────
+        content_bottom = CONTENT_BOTTOM
 
         if kind == "hook":
-            self._render_hook_slide(draw, img, section, margin, max_w, W, H,
-                                    f_label, f_title, f_subtitle, f_icon,
-                                    white, amber)
-
+            canvas, content_bottom = self._render_hook(
+                canvas, section, margin, max_w, W, H,
+                f_label, f_big, f_sub, f_small,
+            )
         elif kind == "step":
-            self._render_step_slide(draw, img, section, margin, max_w, W, H,
-                                    f_label, f_title, f_body, f_step_num, f_icon,
-                                    white, amber, total_steps)
-
+            canvas, content_bottom = self._render_step(
+                canvas, section, margin, max_w, W, H,
+                f_label, f_big, f_body, f_num,
+            )
         elif kind == "cta":
-            self._render_cta_slide(draw, img, section, margin, max_w, W, H,
-                                   f_label, f_title, f_subtitle, f_icon,
-                                   white, amber, sections)
+            canvas, content_bottom = self._render_cta(
+                canvas, section, sections, margin, max_w, W, H,
+                f_label, f_big, f_sub, f_body, f_num, f_small,
+            )
 
-        # ── Burned-in caption (bottom, word-for-word with voiceover) ──
-        cap = section.get("caption", "")
+        cap = (section.get("caption") or "").strip()
         if cap:
-            self._render_caption_bar(draw, cap, W, H, margin, f_caption, white)
+            canvas = self._render_caption(
+                canvas, cap, W, H, margin, f_cap, content_bottom,
+            )
 
-        # ── Bottom CTA bar ──
-        bar_y = H - 118
-        draw.rectangle([(margin, bar_y), (W - margin, bar_y + 4)], fill=_hex_rgb(amber))
-        ctaw = _text_w(draw, CHANNEL_CTA, f_cta_bar)
-        draw.text(((W - ctaw) // 2, bar_y + 16), CHANNEL_CTA,
-                  font=f_cta_bar, fill=amber)
+        # ── Bottom CTA strip ───────────────────────────────────────────────────
+        strip = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        _draw_rounded_rect_rgba(strip, (margin, H - 92, W - margin, H - 18),
+                                radius=12, fill=(255, 255, 255, 18),
+                                outline=_hex_rgba(self.accent, 80))
+        sd = ImageDraw.Draw(strip)
+        cw = _text_w(sd, CHANNEL_CTA, f_cta)
+        sd.text(((W - cw) // 2, H - 72), CHANNEL_CTA, font=f_cta, fill=AMBER)
+        canvas = Image.alpha_composite(canvas, strip)
 
-        return img
+        return canvas.convert("RGB")
 
-    # ── Slide sub-renderers ───────────────────────────────────────────────────
+    # ── Hook slide ─────────────────────────────────────────────────────────────
 
-    def _render_hook_slide(self, draw, img, section, margin, max_w, W, H,
-                           f_label, f_title, f_subtitle, f_icon, white, amber):
-        y = 170
+    def _render_hook(self, canvas, section, margin, max_w, W, H,
+                     f_label, f_big, f_sub, f_small) -> Tuple[Image.Image, int]:
+        """Intro only — no step spoilers."""
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(overlay)
+        n = section.get("num_steps", 3)
 
-        # Large icon circle at top
-        _draw_icon_circle(draw, W // 2, y + 55, 55, "TIP", amber, f_icon)
-        y += 140
+        hero_top = CONTENT_TOP + 40
+        _draw_rounded_rect_rgba(overlay,
+                                (margin, hero_top, W - margin, CONTENT_BOTTOM - 40),
+                                radius=32,
+                                fill=(255, 255, 255, 20),
+                                outline=_hex_rgba(self.accent, 90), outline_w=2)
 
-        # Horizontal rule
-        _draw_horizontal_rule(draw, y, margin, amber)
-        y += 28
-
-        # Label pill
         label = section.get("label", "TODAY'S TIP")
-        lw = _text_w(draw, label, f_label)
-        lh = _text_h(draw, label, f_label)
-        _draw_rounded_rect(draw, (margin, y, margin + lw + 28, y + lh + 16),
-                           radius=8, fill=_hex_rgb(amber))
-        draw.text((margin + 14, y + 8), label, font=f_label, fill=white)
-        y += lh + 40
+        _draw_rounded_rect_rgba(overlay,
+                                (margin + 32, hero_top + 28, margin + 32 + 300, hero_top + 80),
+                                radius=12, fill=_hex_rgba(self.accent, 230))
+        d.text((margin + 52, hero_top + 38), label, font=f_label, fill=WHITE)
 
-        # Title (large, centred, wrapped)
-        title_lines = _wrap(draw, section.get("title", ""), f_title, max_w)
-        for line in title_lines:
-            lw2 = _text_w(draw, line, f_title)
-            lh2 = _text_h(draw, line, f_title)
-            # Subtle text shadow
-            draw.text(((W - lw2) // 2 + 2, y + 2), line, font=f_title, fill=(0, 0, 0))
-            draw.text(((W - lw2) // 2, y), line, font=f_title, fill=white)
-            y += lh2 + 16
-
-        # Subtitle if present
-        sub = section.get("subtitle", "")
-        if sub:
-            y += 20
-            for line in _wrap(draw, sub, f_subtitle, max_w):
-                lw3 = _text_w(draw, line, f_subtitle)
-                draw.text(((W - lw3) // 2, y), line, font=f_subtitle, fill="#CBD5E1")
-                y += _text_h(draw, line, f_subtitle) + 12
-
-        # Three teaser step indicators
-        y = max(y + 40, 800)
-        self._draw_step_teasers(draw, W, y, margin, amber, white)
-
-    def _draw_step_teasers(self, draw, W, y, margin, amber, white):
-        """Three numbered dots hinting at the 3 steps ahead."""
-        f_num = _font(FONT_BOLD, 26)
-        labels = ["1", "2", "3"]
-        dot_r  = 32
-        spacing = 160
-        cx0 = W // 2 - spacing
-        for i, lbl in enumerate(labels):
-            cx = cx0 + i * spacing
-            # Outline circle (unfilled)
-            draw.ellipse([cx - dot_r, y - dot_r, cx + dot_r, y + dot_r],
-                         outline=_hex_rgb(amber), width=3)
-            tw = _text_w(draw, lbl, f_num)
-            th = _text_h(draw, lbl, f_num)
-            draw.text((cx - tw // 2, y - th // 2 - 2), lbl, font=f_num, fill=amber)
-        # Connecting lines
-        for i in range(len(labels) - 1):
-            x_start = cx0 + i * spacing + dot_r
-            x_end   = cx0 + (i + 1) * spacing - dot_r
-            draw.rectangle([(x_start, y - 2), (x_end, y + 2)],
-                           fill=_hex_rgb(amber))
-
-    def _render_step_slide(self, draw, img, section, margin, max_w, W, H,
-                           f_label, f_title, f_body, f_step_num, f_icon,
-                           white, amber, total_steps):
-        step_num = section.get("step_num", 1)
-        y = 160
-
-        # Large circle icon with step number
-        _draw_icon_circle(draw, W // 2, y + 65, 65, str(step_num), amber, f_step_num)
-        y += 165
-
-        # Horizontal rule
-        _draw_horizontal_rule(draw, y, margin, amber)
-        y += 28
-
-        # STEP N label pill
-        label = section.get("label", f"STEP {step_num}")
-        lw = _text_w(draw, label, f_label)
-        lh = _text_h(draw, label, f_label)
-        _draw_rounded_rect(draw, (margin, y, margin + lw + 28, y + lh + 16),
-                           radius=8, fill=_hex_rgb(amber))
-        draw.text((margin + 14, y + 8), label, font=f_label, fill=white)
-        y += lh + 44
-
-        # Main title (content of the step)
-        title_lines = _wrap(draw, section.get("title", ""), f_title, max_w)
-        for line in title_lines:
-            lw2 = _text_w(draw, line, f_title)
-            # Shadow
-            draw.text(((W - lw2) // 2 + 2, y + 2), line, font=f_title, fill=(0, 0, 0))
-            draw.text(((W - lw2) // 2, y), line, font=f_title, fill=white)
-            y += _text_h(draw, line, f_title) + 16
-
-        # Card background for body detail
-        card_top = y + 20
-        card_bot = card_top + 300
-        draw.rounded_rectangle(
-            [margin - 10, card_top, W - margin + 10, card_bot],
-            radius=20,
-            fill=(10, 40, 80),
-            outline=_hex_rgb(amber),
-            width=2,
-        )
-
-        # Detail text inside card (re-use subtitle if available, else title)
-        detail = section.get("subtitle") or section.get("title", "")
-        detail_y = card_top + 30
-        for line in _wrap(draw, detail, f_body, max_w - 40):
-            lw3 = _text_w(draw, line, f_body)
-            draw.text(((W - lw3) // 2, detail_y), line, font=f_body, fill="#E2E8F0")
-            detail_y += _text_h(draw, line, f_body) + 14
-
-        # Progress dots at bottom of card area
-        dot_y = card_bot + 50
-        self._draw_progress_dots(draw, W, dot_y, step_num, total_steps, amber)
-
-    def _draw_progress_dots(self, draw, W, y, current, total, amber):
-        """Filled/unfilled dots showing which step we're on."""
-        r = 14
-        spacing = 48
-        cx0 = W // 2 - (total - 1) * spacing // 2
-        for i in range(total):
-            cx = cx0 + i * spacing
-            if i + 1 <= current:
-                draw.ellipse([cx - r, y - r, cx + r, y + r], fill=_hex_rgb(amber))
-            else:
-                draw.ellipse([cx - r, y - r, cx + r, y + r],
-                             outline=_hex_rgb(amber), width=3)
-
-    def _render_cta_slide(self, draw, img, section, margin, max_w, W, H,
-                          f_label, f_title, f_subtitle, f_icon, white, amber,
-                          all_sections=None):
-        recap_labels = []
-        if all_sections:
-            for s in all_sections:
-                if s.get("kind") == "step":
-                    recap_labels.append(s.get("caption") or s.get("title", ""))
-        if not recap_labels:
-            recap_labels = ["Step 1", "Step 2", "Step 3"]
-
-        y = 160
-
-        self._draw_bookmark_icon(draw, W // 2, y + 65, amber)
-        y += 165
-
-        _draw_horizontal_rule(draw, y, margin, amber)
-        y += 28
-
-        label = "SAVE THIS"
-        lw = _text_w(draw, label, f_label)
-        lh = _text_h(draw, label, f_label)
-        _draw_rounded_rect(draw, (margin, y, margin + lw + 28, y + lh + 16),
-                           radius=8, fill=_hex_rgb(amber))
-        draw.text((margin + 14, y + 8), label, font=f_label, fill=white)
-        y += lh + 44
-
-        title_lines = _wrap(draw, section.get("title", ""), f_title, max_w)
-        for line in title_lines:
-            lw2 = _text_w(draw, line, f_title)
-            draw.text(((W - lw2) // 2 + 2, y + 2), line, font=f_title, fill=(0, 0, 0))
-            draw.text(((W - lw2) // 2, y), line, font=f_title, fill=white)
-            y += _text_h(draw, line, f_title) + 16
+        y = hero_top + 110
+        f_hero = _font(FONT_BOLD, 78)
+        for line in _wrap(d, section.get("title", ""), f_hero, max_w - 60):
+            lw = _text_w(d, line, f_hero)
+            tx = (W - lw) // 2
+            d.text((tx + 3, y + 3), line, font=f_hero, fill=(0, 0, 0))
+            d.text((tx, y), line, font=f_hero, fill=WHITE)
+            y += _text_h(d, line, f_hero) + 20
 
         sub = section.get("subtitle", "")
         if sub:
             y += 24
-            for line in _wrap(draw, sub, f_subtitle, max_w):
-                lw3 = _text_w(draw, line, f_subtitle)
-                draw.text(((W - lw3) // 2, y), line, font=f_subtitle, fill="#CBD5E1")
-                y += _text_h(draw, line, f_subtitle) + 12
+            f_teaser = _font(FONT_REG, 40)
+            for line in _wrap(d, sub, f_teaser, max_w - 80):
+                lw = _text_w(d, line, f_teaser)
+                d.text(((W - lw) // 2, y), line, font=f_teaser, fill=AMBER)
+                y += _text_h(d, line, f_teaser) + 12
 
-        y = max(y + 40, 900)
-        card_top = y
-        card_bot = card_top + 230
-        draw.rounded_rectangle(
-            [margin - 10, card_top, W - margin + 10, card_bot],
-            radius=20,
-            fill=(10, 40, 80),
-            outline=_hex_rgb(amber),
-            width=2,
-        )
-        f_recap = _font(FONT_BOLD, 30)
-        ry = card_top + 22
-        for lbl in recap_labels:
-            short = lbl[:38] + "…" if len(lbl) > 38 else lbl
-            draw.text((margin + 20, ry), f"OK  {short}", font=f_recap, fill=amber)
-            ry += _text_h(draw, short, f_recap) + 16
+        bar_y = CONTENT_BOTTOM - 70
+        self._draw_progress_bar(d, overlay, W, bar_y, margin, 0, n, self.accent)
+        d.text((margin, bar_y + 22), "Swipe through each tip", font=f_small, fill=SLATE)
 
-    def _draw_bookmark_icon(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, amber: str):
-        """Draw a simple bookmark shape (rectangle with V cutout at bottom)."""
-        acc = _hex_rgb(amber)
-        w, h = 70, 90
-        x0, y0 = cx - w // 2, cy - h // 2
-        x1, y1 = cx + w // 2, cy + h // 2
-        # Body
-        draw.rectangle([x0, y0, x1, y1], fill=acc)
-        # V notch at bottom
-        mid = cx
-        draw.polygon([(x0, y1), (mid, y1 - 25), (x1, y1)], fill=_hex_rgb(self.bg_top))
+        return Image.alpha_composite(canvas, overlay), CONTENT_BOTTOM - 120
 
-    def _render_caption_bar(self, draw, cap: str, W: int, H: int,
-                            margin: int, f_caption, white: str):
-        """Semi-transparent bar at bottom with burned-in captions."""
-        cap_y = H - 300
-        bar_height = 160
-        # Dark semi-transparent backing
-        overlay = Image.new("RGBA", (W, bar_height), (0, 0, 0, 140))
-        # We can't composite RGBA onto the draw directly — handled via img.paste below
-        # Instead draw opaque rounded rect
-        draw.rounded_rectangle(
-            [margin - 20, cap_y - 10, W - margin + 20, cap_y + bar_height],
-            radius=16,
-            fill=(5, 15, 35),
-        )
+    # ── Step slide ─────────────────────────────────────────────────────────────
 
-        cap_lines: List[str] = []
+    def _render_step(self, canvas, section, margin, max_w, W, H,
+                     f_label, f_big, f_body, f_num) -> Tuple[Image.Image, int]:
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(overlay)
+
+        step_num = section.get("step_num", 1)
+        n_steps  = section.get("num_steps", 3)
+        col      = section.get("color", self.accent)
+
+        _draw_rounded_rect_rgba(overlay, (margin, CONTENT_TOP, margin + 10, CONTENT_TOP + 480),
+                                radius=5, fill=_hex_rgba(col, 230))
+
+        label = section.get("label", f"STEP {step_num} / {n_steps}")
+        _draw_rounded_rect_rgba(overlay,
+                                (margin + 28, CONTENT_TOP + 8, margin + 28 + 320, CONTENT_TOP + 60),
+                                radius=10, fill=_hex_rgba(col, 220))
+        d.text((margin + 48, CONTENT_TOP + 16), label, font=f_label, fill=WHITE)
+
+        cx, cy = W // 2, CONTENT_TOP + 200
+        r = 72
+        _draw_rounded_rect_rgba(overlay, (cx - r, cy - r, cx + r, cy + r),
+                                radius=r, fill=_hex_rgba(col, 200))
+        num = str(step_num)
+        d.text((cx - _text_w(d, num, f_num) // 2, cy - _text_h(d, num, f_num) // 2),
+               num, font=f_num, fill=WHITE)
+
+        y = cy + r + 48
+        headline = section.get("title", "")
+        f_head = _font(FONT_BOLD, 64)
+        for line in _wrap(d, headline, f_head, max_w - 50):
+            lw = _text_w(d, line, f_head)
+            tx = (W - lw) // 2
+            d.text((tx + 2, y + 2), line, font=f_head, fill=(0, 0, 0))
+            d.text((tx, y), line, font=f_head, fill=WHITE)
+            y += _text_h(d, line, f_head) + 14
+
+        card_y = y + 32
+        card_bot = min(card_y + 280, CONTENT_BOTTOM - 100)
+        _draw_rounded_rect_rgba(overlay,
+                                (margin + 16, card_y, W - margin - 16, card_bot),
+                                radius=24,
+                                fill=(255, 255, 255, 24),
+                                outline=_hex_rgba(col, 120), outline_w=2)
+
+        d.text((margin + 36, card_y + 20), "WHY IT MATTERS", font=_font(FONT_BOLD, 24), fill=AMBER)
+        detail = section.get("detail", "")
+        dy = card_y + 58
+        for line in _wrap(d, detail, f_body, max_w - 80):
+            lw = _text_w(d, line, f_body)
+            d.text(((W - lw) // 2, dy), line, font=f_body, fill="#E2E8F0")
+            dy += _text_h(d, line, f_body) + 12
+
+        bar_y = card_bot + 36
+        self._draw_progress_bar(d, overlay, W, bar_y, margin, step_num, n_steps, col)
+
+        return Image.alpha_composite(canvas, overlay), bar_y + 20
+
+    # ── CTA slide ──────────────────────────────────────────────────────────────
+
+    def _render_cta(self, canvas, section, all_sections, margin, max_w, W, H,
+                    f_label, f_big, f_sub, f_body, f_num, f_small) -> Tuple[Image.Image, int]:
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(overlay)
+
+        # Accent bar
+        _draw_rounded_rect_rgba(overlay, (margin, 140, margin + 10, 620),
+                                radius=5, fill=_hex_rgba(self.accent, 230))
+
+        label = "SAVE THIS"
+        _draw_rounded_rect_rgba(overlay, (margin + 30, 148, margin + 30 + 240, 200),
+                                radius=10, fill=_hex_rgba(self.accent, 220))
+        d.text((margin + 50, 156), label, font=f_label, fill=WHITE)
+
+        f_label2 = _font(FONT_BOLD, 30)
+
+        y = 232
+        title_lines = _wrap(d, section.get("title", "Save this for later"), f_big, max_w - 40)
+        for line in title_lines:
+            d.text((margin + 30 + 2, y + 2), line, font=f_big, fill=(0, 0, 0))
+            d.text((margin + 30, y), line, font=f_big, fill=WHITE)
+            y += _text_h(d, line, f_big) + 16
+
+        sub = section.get("subtitle", "")
+        if sub:
+            y += 20
+            for line in _wrap(d, sub, f_sub, max_w - 40):
+                lw = _text_w(d, line, f_sub)
+                d.text((margin + 30, y), line, font=f_sub, fill=SLATE)
+                y += _text_h(d, line, f_sub) + 10
+
+        card_y   = max(y + 44, 660)
+        card_bot = min(card_y + 360, CONTENT_BOTTOM - 40)
+        _draw_rounded_rect_rgba(overlay,
+                                (margin, card_y, W - margin, card_bot),
+                                radius=28,
+                                fill=(255, 255, 255, 22),
+                                outline=_hex_rgba(self.accent, 100), outline_w=2)
+
+        # Header inside card
+        d.text((margin + 28, card_y + 22), "Quick Recap", font=f_small, fill=AMBER)
+        _draw_rounded_rect_rgba(overlay,
+                                (margin + 20, card_y + 60,
+                                 W - margin - 20, card_y + 63),
+                                radius=2, fill=_hex_rgba(self.accent, 80))
+
+        ry = card_y + 78
+        f_rec = _font(FONT_BOLD, 32)
+        step_sections = [s for s in all_sections if s.get("kind") == "step"]
+        for idx, s in enumerate(step_sections):
+            col = STEP_COLORS[idx % len(STEP_COLORS)]
+            txt = s.get("title", "")
+            if len(txt) > 36:
+                txt = txt[:34] + "…"
+            # Bullet circle
+            _draw_rounded_rect_rgba(overlay,
+                                    (margin + 28, ry + 4, margin + 54, ry + 30),
+                                    radius=14, fill=_hex_rgba(col, 200))
+            dn = ImageDraw.Draw(overlay)
+            nf2 = _font(FONT_BOLD, 20)
+            dn.text((margin + 33, ry + 6), str(idx + 1), font=nf2, fill=WHITE)
+            d.text((margin + 70, ry), txt, font=f_rec, fill=WHITE)
+            ry += 102
+
+        return Image.alpha_composite(canvas, overlay), card_bot
+
+    # ── Caption ────────────────────────────────────────────────────────────────
+
+    def _render_caption(self, canvas: Image.Image, cap: str,
+                        W: int, H: int, margin: int, f_cap,
+                        content_bottom: int) -> Image.Image:
+        """Burned-in caption with proper RGBA compositing (no overlap with cards)."""
+        cap_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        cap_h = CAPTION_H
+        cap_y = max(content_bottom + 24, H - BOTTOM_STRIP_H - cap_h - 24)
+        cap_y = min(cap_y, H - BOTTOM_STRIP_H - cap_h - 12)
+
+        _draw_rounded_rect_rgba(cap_layer,
+                                (margin - 16, cap_y,
+                                 W - margin + 16, cap_y + cap_h),
+                                radius=18,
+                                fill=CAPTION_BG)
+
+        d = ImageDraw.Draw(cap_layer)
+        lines = []
         for part in cap.split("\n"):
             part = part.strip()
             if part:
-                cap_lines.extend(_wrap(draw, part, f_caption, W - 2 * margin - 20))
+                lines.extend(_wrap(d, part, f_cap, W - 2 * margin - 20))
 
-        y = cap_y + 8
-        for line in cap_lines:
-            lw = _text_w(draw, line, f_caption)
+        y = cap_y + 16
+        for line in lines:
+            lw = _text_w(d, line, f_cap)
             tx = (W - lw) // 2
-            # Shadow
-            draw.text((tx + 2, y + 2), line, font=f_caption, fill=(0, 0, 0))
-            draw.text((tx, y), line, font=f_caption, fill=white)
-            y += _text_h(draw, line, f_caption) + 10
+            d.text((tx + 2, y + 2), line, font=f_cap, fill=(0, 0, 0))
+            d.text((tx, y), line, font=f_cap, fill=WHITE)
+            y += _text_h(d, line, f_cap) + 10
 
-    # ── TTS / audio / video helpers ───────────────────────────────────────────
+        return Image.alpha_composite(canvas, cap_layer)
 
-    async def _tts(self, text: str, path: str) -> bool:
+    # ── TTS helpers ────────────────────────────────────────────────────────────
+
+    def _run_tts(self, text: str, path: str) -> bool:
+        """Run TTS safely when an event loop may already be running."""
+        import concurrent.futures
         import edge_tts
-        comm = edge_tts.Communicate(text.strip(), self.voice, rate="+5%")
-        await comm.save(path)
+
+        async def _do():
+            comm = edge_tts.Communicate(text.strip(), self.voice, rate="+5%")
+            await comm.save(path)
+
+        def _sync():
+            asyncio.run(_do())
+
+        try:
+            asyncio.get_running_loop()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(_sync).result()
+        except RuntimeError:
+            _sync()
+
         return os.path.exists(path) and os.path.getsize(path) > 100
 
     def _probe_duration(self, path: str) -> float:
@@ -567,32 +661,55 @@ class TipVideoBuilder:
         except ValueError:
             return 0.0
 
+    def _atempo_chain(self, factor: float) -> str:
+        """Build atempo filter chain; each atempo must stay in [0.5, 2.0]."""
+        filters = []
+        t = factor
+        while t < 0.5:
+            filters.append("atempo=0.5")
+            t /= 0.5
+        while t > 2.0:
+            filters.append("atempo=2.0")
+            t /= 2.0
+        filters.append(f"atempo={max(0.5, min(2.0, t)):.4f}")
+        return ",".join(filters)
+
     def _fit_audio_to_duration(self, src: str, dst: str, target: float) -> bool:
+        """Stretch/trim audio to exactly `target` seconds with safe atempo range."""
         dur = self._probe_duration(src)
         if dur <= 0:
             return False
-        if dur > target:
-            af = f"atrim=0:{target:.3f}"
-        elif dur < target - 0.05:
-            speed = min(dur / target, 1.0)
-            tempo = min(2.0, max(1.0, 1.0 / speed)) if speed < 0.98 else 1.0
-            pad = min(0.5, max(0, target - dur / tempo))
-            af = f"atempo={tempo:.4f},apad=pad_dur={pad:.3f}"
+
+        if abs(dur - target) < 0.06:
+            af = f"apad=pad_dur={max(0, target - dur):.3f},atrim=0:{target:.3f}"
+        elif dur > target:
+            speed = dur / target
+            if speed <= 2.0:
+                af = f"{self._atempo_chain(speed)},atrim=0:{target:.3f}"
+            else:
+                af = f"atrim=0:{target:.3f}"
         else:
-            pad = min(0.5, max(0, target - dur))
-            af = f"apad=pad_dur={pad:.3f}"
+            stretch = dur / target
+            af = (
+                f"{self._atempo_chain(stretch)},"
+                f"apad=pad_dur={max(0.05, target - dur / max(stretch, 0.01)):.3f},"
+                f"atrim=0:{target:.3f}"
+            )
+
         cmd = [
             "ffmpeg", "-y", "-i", src,
             "-af", af, "-t", f"{target:.3f}",
             "-c:a", "libmp3lame", "-q:a", "4", dst,
         ]
         r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[TipVideoBuilder] Audio fit: {r.stderr[-200:]}")
         return r.returncode == 0 and os.path.exists(dst)
 
     def _image_to_segment(self, png: str, duration: float, seg_path: str) -> bool:
         fps    = TIP_FPS
         frames = max(int(duration * fps), 2)
-        z_expr = "1.05-0.05*on/(max(on-1\\,1))"
+        z_expr = "1.04-0.04*on/(max(on-1\\,1))"
         vf = (
             f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
             f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},"
@@ -606,7 +723,7 @@ class TipVideoBuilder:
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"[TipVideoBuilder] Segment error: {result.stderr[-300:]}")
+            print(f"[TipVideoBuilder] Segment error: {result.stderr[-400:]}")
         return result.returncode == 0
 
     def _concat_video_xfade(self, segments: List[str], durations: List[float], out: str) -> bool:
@@ -614,19 +731,21 @@ class TipVideoBuilder:
             shutil.copy(segments[0], out)
             return True
 
-        xfade  = self.xfade
+        xfade = self.xfade
         inputs = []
         for seg in segments:
             inputs.extend(["-i", seg])
 
         if len(segments) == 2:
             offset = max(durations[0] - xfade, 0.1)
-            fc = f"[0:v][1:v]xfade=transition=fade:duration={xfade}:offset={offset:.3f}[vout]"
+            fc = (f"[0:v][1:v]xfade=transition=fade:"
+                  f"duration={xfade}:offset={offset:.3f}[vout]")
         else:
-            parts       = []
-            offset      = max(durations[0] - xfade, 0.1)
+            parts = []
+            offset = max(durations[0] - xfade, 0.1)
             parts.append(
-                f"[0:v][1:v]xfade=transition=fade:duration={xfade}:offset={offset:.3f}[v01]"
+                f"[0:v][1:v]xfade=transition=fade:duration={xfade}"
+                f":offset={offset:.3f}[v01]"
             )
             prev, accumulated = "v01", durations[0] + durations[1] - xfade
             for i in range(2, len(segments)):
@@ -647,8 +766,7 @@ class TipVideoBuilder:
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            # Fallback: simple concat
-            print("[TipVideoBuilder] xfade failed — using concat fallback")
+            print("[TipVideoBuilder] xfade failed — concat fallback")
             lst = os.path.join(os.path.dirname(out), "vconcat.txt")
             with open(lst, "w") as f:
                 for s in segments:
@@ -678,7 +796,7 @@ class TipVideoBuilder:
         t   = TIP_TOTAL_DURATION
         if bgm and os.path.exists(bgm):
             fc = (
-                "[1:a]volume=1.0[v];[2:a]volume=0.1,aloop=loop=-1:size=2e+09[m];"
+                "[1:a]volume=1.0[v];[2:a]volume=0.08,aloop=loop=-1:size=2e+09[m];"
                 "[v][m]amix=inputs=2:duration=first:dropout_transition=2[a]"
             )
             cmd = [
@@ -702,11 +820,10 @@ class TipVideoBuilder:
             print(f"[TipVideoBuilder] Mux error: {r.stderr[-300:]}")
         return r.returncode == 0 and os.path.exists(output)
 
-    # ── Public build entry-point ──────────────────────────────────────────────
+    # ── Public entry-point ─────────────────────────────────────────────────────
 
     def build(self, tip: Dict, output_path: Optional[str] = None) -> Optional[str]:
-        sections    = self._sections_from_tip(tip)
-        total_steps = sum(1 for s in sections if s["kind"] == "step")
+        sections     = self._sections_from_tip(tip)
         total_slides = len(sections)
 
         if output_path is None:
@@ -716,32 +833,34 @@ class TipVideoBuilder:
                 f"tip_{tip.get('generated_on', date.today().isoformat())}.mp4",
             )
 
+        topic = tip.get("queue_topic") or tip.get("tip_title", "productivity")
+        print(f"[TipVideoBuilder] Topic: {topic}")
+
         work = tempfile.mkdtemp(prefix="tip_build_")
         try:
-            # ── TTS per slide ──
             fitted_audio = []
             for i, sec in enumerate(sections):
                 raw    = os.path.join(work, f"voice_raw_{i}.mp3")
                 fitted = os.path.join(work, f"voice_fit_{i}.mp3")
-                voice_text = (sec.get("voice") or sec.get("caption") or "").strip()
-                if not voice_text:
-                    voice_text = sec.get("title", "Tip")
-                try:
-                    ok = asyncio.run(self._tts(voice_text, raw))
-                except Exception as e:
-                    print(f"[TipVideoBuilder] TTS error slide {i}: {e}")
+                vtext  = (sec.get("voice") or sec.get("caption") or "").strip()
+                if not vtext:
+                    vtext = sec.get("title", "Tip")
+                ok = self._run_tts(vtext, raw)
+                if not ok:
+                    print(f"[TipVideoBuilder] TTS failed for slide {i}")
                     return None
-                if not ok or not self._fit_audio_to_duration(raw, fitted, sec["duration"]):
+                if not self._fit_audio_to_duration(raw, fitted, sec["duration"]):
                     print(f"[TipVideoBuilder] Audio fit failed for slide {i}")
                     return None
                 fitted_audio.append(fitted)
 
-            # ── Render slides → video segments ──
             seg_paths, durations = [], []
             for i, sec in enumerate(sections):
-                progress = f"{i + 1}/{total_slides}"
-                slide = self._render_slide(sec, progress, total_steps=total_steps, sections=sections)
-                png      = os.path.join(work, f"slide_{i}.png")
+                kw = _topic_to_query(sec.get("title") or topic)
+                print(f"[TipVideoBuilder] Slide {i + 1} background: '{kw}' ...")
+                photo = _fetch_background_image(kw, slide_idx=i)
+                slide = self._render_slide(sec, photo, sections)
+                png = os.path.join(work, f"slide_{i}.png")
                 slide.save(png, quality=95)
                 dur = sec["duration"]
                 seg = os.path.join(work, f"seg_{i}.mp4")
@@ -751,7 +870,7 @@ class TipVideoBuilder:
                 seg_paths.append(seg)
                 durations.append(dur)
 
-            # ── Assemble ──
+            # Assemble
             video_only = os.path.join(work, "video_xfade.mp4")
             if not self._concat_video_xfade(seg_paths, durations, video_only):
                 return None
@@ -761,7 +880,7 @@ class TipVideoBuilder:
             if not self._final_mux(video_only, voice_full, output_path):
                 return None
 
-            # Force exact target duration
+            # Clamp to exact target duration
             exact = os.path.join(work, "exact.mp4")
             subprocess.run(
                 [

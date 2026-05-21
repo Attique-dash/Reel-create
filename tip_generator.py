@@ -3,9 +3,25 @@ Generate daily English tip scripts for faceless Shorts (Idea 2).
 """
 import json
 import hashlib
+import re
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional
+
+
+def parse_step_count(topic: Optional[str] = None, tip: Optional[Dict] = None) -> int:
+    """How many step slides to build (2–5). Matches '5 apps', 'top 3', etc."""
+    if tip:
+        if tip.get("step_count"):
+            return min(max(int(tip["step_count"]), 2), 5)
+        steps = tip.get("steps") or []
+        if len(steps) >= 2:
+            return min(len(steps), 5)
+    if topic:
+        m = re.search(r"\b(?:top\s+)?(\d+)\b", topic.lower())
+        if m:
+            return min(max(int(m.group(1)), 2), 5)
+    return 3
 
 from google import genai
 
@@ -226,32 +242,82 @@ class TipGenerator:
                     "Post one offer on a free platform",
                     "Deliver fast and ask for a review",
                 ]
+            elif re.search(r"\b(apps?|tools?|software|platforms?)\b", t):
+                n = parse_step_count(topic)
+                pool = [
+                    ("Notion AI", "Notes, tasks, and AI writing in one workspace"),
+                    ("Todoist", "Smart to-do lists with quick natural input"),
+                    ("Otter.ai", "Records calls and auto-writes meeting notes"),
+                    ("Calendly", "Books meetings without endless email threads"),
+                    ("Zapier", "Links your apps so busywork runs itself"),
+                    ("Grammarly", "Fixes grammar and tone while you type"),
+                    ("Reclaim.ai", "Auto-blocks focus time on your calendar"),
+                ]
+                step_dicts = []
+                for i in range(n):
+                    name, detail = pool[i % len(pool)]
+                    step_dicts.append({
+                        "title": name,
+                        "detail": detail,
+                        "caption": name,
+                        "line": detail,
+                        "voice": f"App {i + 1}: {name}. {detail}",
+                    })
+                steps = step_dicts
             else:
-                # Generic but action-oriented fallback
+                n = parse_step_count(topic)
                 words = [w for w in title.split() if len(w) > 3][:3]
-                noun = words[0].capitalize() if words else "This skill"
+                noun = words[0].capitalize() if words else "this"
+                templates = [
+                    (f"Start with one {noun} habit", f"Pick the smallest action you can do in five minutes"),
+                    (f"Build a daily {noun} routine", f"Repeat at the same time so your brain expects it"),
+                    (f"Track your {noun} results", f"Write one win each day so progress stays visible"),
+                    (f"Remove one {noun} blocker", f"Delete or automate the task that slows you down"),
+                    (f"Share one {noun} lesson", f"Teaching others locks in what you learned"),
+                ]
                 steps = [
-                    f"Start with one small {noun} task",
-                    f"Practice {noun} for 20 minutes daily",
-                    f"Share your {noun} progress publicly",
+                    {"title": t[0], "detail": t[1], "caption": t[0], "line": t[1],
+                     "voice": f"Step {i + 1}: {t[0]}. {t[1]}"}
+                    for i, t in enumerate(templates[:n])
                 ]
 
+            n = parse_step_count(topic)
+            if steps and isinstance(steps[0], str):
+                while len(steps) < n:
+                    steps.append(steps[-1])
+                steps = steps[:n]
+                step_rows = [
+                    {
+                        "title": s,
+                        "detail": s,
+                        "caption": s,
+                        "line": s,
+                        "voice": f"Step {i + 1}: {s}",
+                    }
+                    for i, s in enumerate(steps)
+                ]
+            else:
+                step_rows = steps[:n]
+
+            n = len(step_rows)
             tip = {
                 "slide_emojis": SLIDE_EMOJIS,
                 "hook": hook[:80],
                 "hook_voice": hook[:80],
+                "hook_subtitle": f"Watch all {n} tips in 30 seconds",
                 "tip_title": title[:60],
-                "steps": [
-                    {"emoji": "📤", "caption": steps[0], "line": steps[0], "voice": steps[0]},
-                    {"emoji": "📂", "caption": steps[1], "line": steps[1], "voice": steps[1]},
-                    {"emoji": "⏱️", "caption": steps[2], "line": steps[2], "voice": steps[2]},
-                ],
+                "step_count": n,
+                "steps": step_rows,
                 "cta_line1": "Save this and try it today",
                 "cta_line2": "Comment 'DONE' when you try it!",
                 "cta_voice": "Save this and try it today. Comment DONE when you try it!",
                 "script": (
-                    f"{hook}. {steps[0]}. {steps[1]}. {steps[2]}. "
-                    "Save this and try it today. Comment DONE when you try it!"
+                    f"{hook}. "
+                    + " ".join(
+                        s["voice"] if isinstance(s, dict) else s
+                        for s in step_rows
+                    )
+                    + " Save this and try it today. Comment DONE when you try it!"
                 ),
                 "suggested_titles": [f"{title[:55]} #Shorts"],
                 "suggested_description": (
@@ -282,11 +348,17 @@ class TipGenerator:
         avoid = avoid_titles if avoid_titles is not None else self._load_history()
         avoid_str = ", ".join(avoid[-15:]) if avoid else "none"
 
+        step_n = parse_step_count(topic)
         if topic:
             focus = f"""TOPIC (center the entire Short on this — hook must mention it):
 "{topic}"
 Niche context: {self.niche}
-The 3 steps should directly answer or break down this topic (lists, tips, or steps as appropriate)."""
+Create exactly {step_n} steps that directly answer this topic (e.g. if topic says "5 apps", list 5 real app names).
+Each step needs DIFFERENT fields:
+- title: short headline only (max 6 words, e.g. app name)
+- detail: one sentence explaining it (max 14 words, must NOT repeat title)
+- voice: spoken line for TTS (title + detail, max 18 words)
+Do NOT put the same text in title and detail."""
         else:
             focus = f"Niche: {self.niche}"
 
@@ -297,24 +369,26 @@ Return ONLY valid JSON (no markdown).
 
 RULES:
 - slide_emojis: ["📧","📤","📂","⏱️","💾"]
-- hook and hook_voice MUST be identical words (max 12 words)
-- Each step: caption, line, and voice MUST be the exact same string (max 10 words)
+- step_count: {step_n}
+- hook and hook_voice: identical (max 12 words)
+- hook_subtitle: teaser only, e.g. "All 5 tips in 30 seconds" — do NOT list step names on hook
+- Each step: title (headline), detail (explanation), voice (spoken). title and detail MUST differ.
 - cta_line1: short, generic, topic-relevant (max 10 words). Examples:
   - "Save this and try it today"
   - "Save this for your next interview"
 - cta_line2: "Comment 'DONE' when you try it!"
 - cta_voice: speak cta_line1 then cta_line2 word-for-word (no extra words)
-- 3 logical connected steps. Avoid: {avoid_str}
+- Exactly {step_n} logical connected steps. Avoid: {avoid_str}
 
 {{
   "slide_emojis": ["📧","📤","📂","⏱️","💾"],
+  "step_count": {step_n},
   "hook": "Same text as hook_voice",
   "hook_voice": "Same text as hook",
+  "hook_subtitle": "Short teaser, no step spoilers",
   "tip_title": "Internal title",
   "steps": [
-    {{"emoji":"📤","caption":"short line","line":"same as caption","voice":"same as caption"}},
-    {{"emoji":"📂","caption":"...","line":"...","voice":"..."}},
-    {{"emoji":"⏱️","caption":"...","line":"...","voice":"..."}}
+    {{"title":"Headline","detail":"Different explanation sentence","voice":"Spoken title and detail","line":"same as detail"}}
   ],
   "cta_line1": "Save this and try it today",
   "cta_line2": "Comment 'DONE' when you try it!",
