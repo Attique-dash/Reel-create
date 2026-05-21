@@ -293,9 +293,9 @@ class TipVideoBuilder:
                                     white, amber, total_steps)
 
         elif kind == "cta":
-    self._render_cta_slide(draw, img, section, margin, max_w, W, H,
-                           f_label, f_title, f_subtitle, f_icon,
-                           white, amber, sections)
+            self._render_cta_slide(draw, img, section, margin, max_w, W, H,
+                                   f_label, f_title, f_subtitle, f_icon,
+                                   white, amber, sections)
 
         # ── Burned-in caption (bottom, word-for-word with voiceover) ──
         cap = section.get("caption", "")
@@ -447,30 +447,25 @@ class TipVideoBuilder:
                 draw.ellipse([cx - r, y - r, cx + r, y + r],
                              outline=_hex_rgb(amber), width=3)
 
-   def _render_cta_slide(self, draw, img, section, margin, max_w, W, H,
-                      f_label, f_title, f_subtitle, f_icon, white, amber,
-                      all_sections=None):
-    # Extract real step captions for the recap card
-    recap_labels = []
-    if all_sections:
-        for s in all_sections:
-            if s.get("kind") == "step":
-                recap_labels.append(s.get("caption") or s.get("title", ""))
-    if not recap_labels:
-        recap_labels = ["Step 1", "Step 2", "Step 3"]  # last-resort fallback
-    
-    # ... rest of method unchanged until the recap card block ...
+    def _render_cta_slide(self, draw, img, section, margin, max_w, W, H,
+                          f_label, f_title, f_subtitle, f_icon, white, amber,
+                          all_sections=None):
+        recap_labels = []
+        if all_sections:
+            for s in all_sections:
+                if s.get("kind") == "step":
+                    recap_labels.append(s.get("caption") or s.get("title", ""))
+        if not recap_labels:
+            recap_labels = ["Step 1", "Step 2", "Step 3"]
+
         y = 160
 
-        # Save icon (bookmark-style drawn shape)
         self._draw_bookmark_icon(draw, W // 2, y + 65, amber)
         y += 165
 
-        # Rule
         _draw_horizontal_rule(draw, y, margin, amber)
         y += 28
 
-        # Label
         label = "SAVE THIS"
         lw = _text_w(draw, label, f_label)
         lh = _text_h(draw, label, f_label)
@@ -479,7 +474,6 @@ class TipVideoBuilder:
         draw.text((margin + 14, y + 8), label, font=f_label, fill=white)
         y += lh + 44
 
-        # Title
         title_lines = _wrap(draw, section.get("title", ""), f_title, max_w)
         for line in title_lines:
             lw2 = _text_w(draw, line, f_title)
@@ -487,7 +481,6 @@ class TipVideoBuilder:
             draw.text(((W - lw2) // 2, y), line, font=f_title, fill=white)
             y += _text_h(draw, line, f_title) + 16
 
-        # Subtitle
         sub = section.get("subtitle", "")
         if sub:
             y += 24
@@ -496,7 +489,6 @@ class TipVideoBuilder:
                 draw.text(((W - lw3) // 2, y), line, font=f_subtitle, fill="#CBD5E1")
                 y += _text_h(draw, line, f_subtitle) + 12
 
-        # Recap card: actual step content from the tip
         y = max(y + 40, 900)
         card_top = y
         card_bot = card_top + 230
@@ -509,9 +501,9 @@ class TipVideoBuilder:
         )
         f_recap = _font(FONT_BOLD, 30)
         ry = card_top + 22
-        for lbl in recap_labels:          # recap_labels is passed in now
+        for lbl in recap_labels:
             short = lbl[:38] + "…" if len(lbl) > 38 else lbl
-            draw.text((margin + 20, ry), f"✓  {short}", font=f_recap, fill=amber)
+            draw.text((margin + 20, ry), f"OK  {short}", font=f_recap, fill=amber)
             ry += _text_h(draw, short, f_recap) + 16
 
     def _draw_bookmark_icon(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, amber: str):
@@ -748,7 +740,7 @@ class TipVideoBuilder:
             seg_paths, durations = [], []
             for i, sec in enumerate(sections):
                 progress = f"{i + 1}/{total_slides}"
-slide = self._render_slide(sec, progress, total_steps=total_steps, sections=sections)
+                slide = self._render_slide(sec, progress, total_steps=total_steps, sections=sections)
                 png      = os.path.join(work, f"slide_{i}.png")
                 slide.save(png, quality=95)
                 dur = sec["duration"]
