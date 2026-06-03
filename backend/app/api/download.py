@@ -6,9 +6,9 @@ router = APIRouter()
 
 PROCESSED_DIR = os.getenv("PROCESSED_DIR", "./storage/processed")
 
-@router.get("/{clip_id}")
-async def download_clip(clip_id: str):
-    """Download a specific clip"""
+@router.get("/preview/{clip_id}")
+async def preview_clip(clip_id: str):
+    """Stream clip preview"""
     clip_path = os.path.join(PROCESSED_DIR, f"{clip_id}.mp4")
     
     if not os.path.exists(clip_path):
@@ -17,7 +17,7 @@ async def download_clip(clip_id: str):
     return FileResponse(
         clip_path,
         media_type="video/mp4",
-        filename=f"{clip_id}.mp4"
+        headers={"Accept-Ranges": "bytes"}
     )
 
 @router.get("/job/{job_id}")

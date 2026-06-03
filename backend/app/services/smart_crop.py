@@ -1,9 +1,10 @@
-import cv2
-import mediapipe as mp
-import numpy as np
-
 def smart_crop_video(video_path: str, settings: dict):
-    """Apply smart cropping with face detection using MediaPipe"""
+    """Apply smart cropping with face detection"""
+    import cv2
+    import mediapipe as mp
+    import numpy as np
+    import os
+    
     mp_face_detection = mp.solutions.face_detection
     
     cap = cv2.VideoCapture(video_path)
@@ -13,8 +14,14 @@ def smart_crop_video(video_path: str, settings: dict):
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS)
     
-    # Calculate crop dimensions for 9:16
-    target_width = height * 9 // 16
+    # Calculate target dimensions (9:16)
+    target_height = height
+    target_width = int(height * 9 / 16)
+    
+    # Output path
+    output_path = video_path.replace('.mp4', '_cropped.mp4')
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (target_width, target_height))
     
     with mp_face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.5) as face_detection:
         while cap.isOpened():
@@ -22,15 +29,16 @@ def smart_crop_video(video_path: str, settings: dict):
             if not ret:
                 break
             
-            # Detect faces
-            results = face_detection.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            # Convert to RGB for MediaPipe
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = face_detection.process(rgb_frame)
             
             if results.detections:
                 # Find center of detected faces
                 face_centers = []
                 for detection in results.detections:
                     bbox = detection.location_data.relative_bounding_box
-                    center_x = bbox.xcenter + bbox.width / 2
+                    center_x = (bbox.xmin + bbox.width / 2) * width
                     face_centers.append(center_x)
                 
                 # Calculate optimal crop position
@@ -42,7 +50,10 @@ def smart_crop_video(video_path: str, settings: dict):
             
             # Apply crop
             cropped = frame[:, int(crop_x):int(crop_x + target_width)]
-            
-            # Process cropped frame (in production, save to new video)
+            out.write(cropped)
     
     cap.release()
+    out.release()
+    
+    # Replace original with cropped version
+    os.replace(output_path, video_path)

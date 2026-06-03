@@ -14,18 +14,19 @@ class UploadResponse(BaseModel):
     status: str
     message: str
 
+class SubtitleStyle(BaseModel):
+    font: str = "Arial"
+    size: int = 24
+    color: str = "white"
+    position: str = "bottom"
+
 class JobRequest(BaseModel):
     url: Optional[str] = None
     num_clips: int = Field(default=5, ge=1, le=20)
     clip_duration: int = Field(default=60, ge=15, le=180)
     aspect_ratio: str = Field(default="9:16", pattern=r"^(9:16|1:1|16:9)$")
-    subtitle_style: dict = Field(default_factory=lambda: {
-        "font": "Arial",
-        "size": 24,
-        "color": "white",
-        "position": "bottom"
-    })
-
+    subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)  # Fixed
+    
 class Clip(BaseModel):
     id: str
     start_time: float

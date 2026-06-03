@@ -1,19 +1,38 @@
-import type { Metadata } from "next"
-import "./globals.css"
+// app/layout.tsx
+import Link from "next/link"
 
-export const metadata: Metadata = {
-  title: "Video Processor - AI-Powered Short Content Creator",
-  description: "Transform long videos into engaging short clips using AI",
-}
+// Add navigation component to your layout
+const Navigation = () => (
+  <nav className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+    <div className="container mx-auto px-4 py-4">
+      <div className="flex justify-between items-center">
+        <Link href="/" className="text-xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+          Video Processor
+        </Link>
+        <div className="flex gap-4">
+          <Link href="/" className="text-gray-600 dark:text-gray-300 hover:text-blue-600 transition-colors">
+            Home
+          </Link>
+          <Link href="/upload" className="text-gray-600 dark:text-gray-300 hover:text-blue-600 transition-colors">
+            Upload
+          </Link>
+          <Link href="/dashboard" className="text-gray-600 dark:text-gray-300 hover:text-blue-600 transition-colors">
+            Dashboard
+          </Link>
+        </div>
+      </div>
+    </div>
+  </nav>
+)
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
+// Update RootLayout to include navigation
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <Navigation />
+        {children}
+      </body>
     </html>
   )
 }
