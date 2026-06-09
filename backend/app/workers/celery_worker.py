@@ -20,11 +20,16 @@ celery_app.conf.update(
 @celery_app.task(bind=True)
 def process_video_task(self, job_id: str, video_source: str, source_type: str, settings: dict = None):
     """Background task to process video"""
-    from app.services.video_downloader import download_video
-    from app.services.transcriber import transcribe_video
-    from app.services.ai_analyzer import analyze_moments
-    from app.services.video_editor import create_clips
-    from app.services.smart_crop import smart_crop_video
+    try:
+        from app.services.video_downloader import download_video
+        from app.services.transcriber import transcribe_video
+        from app.services.ai_analyzer import analyze_moments
+        from app.services.video_editor import create_clips
+        from app.services.smart_crop import smart_crop_video
+    except ImportError as e:
+        asyncio.run(update_job_status(job_id, "failed", 0, error=f"Video processing dependencies not installed: {str(e)}"))
+        return {"status": "failed", "job_id": job_id, "error": f"Missing dependencies: {str(e)}"}
+    
     from app.database.mongodb import get_db
     import asyncio
     
@@ -67,11 +72,10 @@ def process_video_task(self, job_id: str, video_source: str, source_type: str, s
 
 async def update_job_status(job_id: str, status: str, progress: int, clips: list = None, error: str = None):
     """Update job status in database"""
-    db = await get_db()
+    from app.database.sqlite_adapter import JobRepository
     update_data = {
         "status": status,
-        "progress": progress,
-        "updated_at": datetime.utcnow()
+        "progress": progress
     }
     
     if clips:
@@ -80,4 +84,4 @@ async def update_job_status(job_id: str, status: str, progress: int, clips: list
     if error:
         update_data["error"] = error
     
-    await db.jobs.update_one({"job_id": job_id}, {"$set": update_data})
+    await JobRepository.update_job(job_id, **update_data)

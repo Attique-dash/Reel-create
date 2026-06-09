@@ -1,5 +1,6 @@
 // app/layout.tsx
 import Link from "next/link"
+import "./globals.css"
 
 // Add navigation component to your layout
 const Navigation = () => (

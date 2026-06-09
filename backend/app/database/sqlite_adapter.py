@@ -49,7 +49,7 @@ class JobRepository:
             for key, value in kwargs.items():
                 if key == 'clips' and isinstance(value, list):
                     value = json.dumps(value)
-                elif key == 'settings' and isinstance(value,ict):
+                elif key == 'settings' and isinstance(value, dict):
                     value = json.dumps(value)
                 updates.append(f"{key} = ?")
                 values.append(value)
