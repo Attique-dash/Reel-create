@@ -5,6 +5,7 @@ import os
 import aiofiles
 from app.models.schemas import UploadResponse, JobRequest, Job, JobStatus
 from app.workers.celery_worker import process_video_task
+from app.database.mongodb import JobRepository
 
 router = APIRouter()
 
@@ -24,6 +25,9 @@ async def upload_video(file: UploadFile = File(...)):
         content = await file.read()
         await f.write(content)
     
+    # Save job to database
+    await JobRepository.create_job(job_id, source_type="file", source_path=file_path)
+    
     # Trigger background processing
     process_video_task.delay(job_id, file_path, "file")
     
@@ -40,6 +44,9 @@ async def upload_video_url(request: JobRequest):
         raise HTTPException(status_code=400, detail="URL is required")
     
     job_id = str(uuid.uuid4())
+    
+    # Save job to database
+    await JobRepository.create_job(job_id, source_type="url", source_path=request.url, settings=request.dict())
     
     # Trigger background processing
     process_video_task.delay(job_id, request.url, "url", request.dict())

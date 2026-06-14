@@ -1,5 +1,6 @@
 from celery import Celery
 import os
+import asyncio
 from datetime import datetime
 
 # Celery configuration
@@ -57,9 +58,13 @@ def process_video_task(self, job_id: str, video_source: str, source_type: str, s
         clips = create_clips(video_path, moments, settings)
         asyncio.run(update_job_status(job_id, "processing", 85))
         
-        # Step 5: Smart crop and subtitle burning
-        for clip in clips:
-            smart_crop_video(clip["path"], settings)
+        # Step 5: Smart crop and subtitle burning (optional)
+        try:
+            for clip in clips:
+                smart_crop_video(clip["path"], settings)
+        except ImportError as e:
+            # Skip smart crop if dependencies not available
+            print(f"Smart crop skipped due to missing dependencies: {e}")
         
         # Update job status to completed
         asyncio.run(update_job_status(job_id, "completed", 100, clips))
@@ -72,7 +77,7 @@ def process_video_task(self, job_id: str, video_source: str, source_type: str, s
 
 async def update_job_status(job_id: str, status: str, progress: int, clips: list = None, error: str = None):
     """Update job status in database"""
-    from app.database.sqlite_adapter import JobRepository
+    from app.database.mongodb import JobRepository
     update_data = {
         "status": status,
         "progress": progress

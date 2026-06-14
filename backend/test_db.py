@@ -1,5 +1,5 @@
 import asyncio
-from app.database.sqlite_adapter import JobRepository
+from app.database.mongodb import JobRepository
 
 async def test():
     print("Testing database operations...")

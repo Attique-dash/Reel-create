@@ -3,6 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import upload, process, download
 from app.database.mongodb import init_db
 import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 app = FastAPI(
     title="Video Processor API",
