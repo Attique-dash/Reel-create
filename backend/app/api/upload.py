@@ -25,11 +25,24 @@ async def upload_video(file: UploadFile = File(...)):
         content = await file.read()
         await f.write(content)
     
-    # Save job to database
-    await JobRepository.create_job(job_id, source_type="file", source_path=file_path)
+    # Default settings for file upload
+    default_settings = {
+        "num_clips": 5,
+        "clip_duration": 60,
+        "aspect_ratio": "9:16",
+        "subtitle_style": {
+            "font": "Arial",
+            "size": 24,
+            "color": "white",
+            "position": "bottom"
+        }
+    }
     
-    # Trigger background processing
-    process_video_task.delay(job_id, file_path, "file")
+    # Save job to database with default settings
+    await JobRepository.create_job(job_id, source_type="file", source_path=file_path, settings=default_settings)
+    
+    # Trigger background processing with settings
+    process_video_task.delay(job_id, file_path, "file", default_settings)
     
     return UploadResponse(
         job_id=job_id,
