@@ -2,6 +2,22 @@
 
 Transform long videos into engaging short clips (TikTok, Instagram Reels, YouTube Shorts) using AI analysis.
 
+## ⚠️ Important: If Loading Screen Continues Forever
+
+If you upload a video and the "Processing Video" loading screen never completes:
+
+**👉 Read [SETUP_GUIDE.md](./SETUP_GUIDE.md) for the complete solution**
+
+**Quick Fix**: The Celery worker is not running. Start it in a new terminal:
+```bash
+cd backend
+source venv/bin/activate
+./start_celery_worker.sh
+# Or: celery -A app.workers.celery_worker worker --loglevel=info --pool=solo
+```
+
+See [SETUP_GUIDE.md](./SETUP_GUIDE.md) for complete setup instructions.
+
 ## Features
 
 - **Video Upload & URL Processing**: Upload video files or paste URLs from YouTube, Vimeo, Instagram, or TikTok

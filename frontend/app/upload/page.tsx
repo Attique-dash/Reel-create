@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import VideoUploader from "@/components/VideoUploader/VideoUploader"
 import SettingsPanel from "@/components/SettingsPanel/SettingsPanel"
 import type { JobRequest } from "@/lib/api"
-import { DEFAULT_SETTINGS } from "../../../shared/types"
+import { DEFAULT_SETTINGS } from "@/lib/shared-types"
 
 export default function UploadPage() {
   const router = useRouter()
