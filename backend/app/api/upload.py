@@ -2,6 +2,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 import uuid
 import os
+import asyncio
 import aiofiles
 from app.models.schemas import UploadResponse, JobRequest, Job, JobStatus
 from app.workers.celery_worker import process_video_task
@@ -41,8 +42,12 @@ async def upload_video(file: UploadFile = File(...)):
     # Save job to database with default settings
     await JobRepository.create_job(job_id, source_type="file", source_path=file_path, settings=default_settings)
     
-    # Trigger background processing with settings
-    process_video_task.delay(job_id, file_path, "file", default_settings)
+    # Trigger background processing in a separate thread
+    # so the HTTP response returns immediately instead of blocking
+    # until the entire video pipeline finishes.
+    asyncio.create_task(asyncio.to_thread(
+        process_video_task.delay, job_id, file_path, "file", default_settings
+    ))
     
     return UploadResponse(
         job_id=job_id,
@@ -61,8 +66,10 @@ async def upload_video_url(request: JobRequest):
     # Save job to database
     await JobRepository.create_job(job_id, source_type="url", source_path=request.url, settings=request.dict())
     
-    # Trigger background processing
-    process_video_task.delay(job_id, request.url, "url", request.dict())
+    # Trigger background processing in a separate thread
+    asyncio.create_task(asyncio.to_thread(
+        process_video_task.delay, job_id, request.url, "url", request.dict()
+    ))
     
     return UploadResponse(
         job_id=job_id,

@@ -28,7 +28,7 @@ def analyze_moments(transcript: dict, settings: dict = None) -> list:
     
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
         num_clips = settings.get('num_clips', 5)
         clip_duration = settings.get('clip_duration', 60)

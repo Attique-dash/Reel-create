@@ -4,6 +4,17 @@ from app.database.mongodb import get_db
 
 router = APIRouter()
 
+def _sanitize_job(job: dict) -> dict:
+    """Remove non-serializable fields from MongoDB document."""
+    if not job:
+        return job
+    job.pop("_id", None)
+    # Convert datetime fields to ISO strings
+    for key in ("created_at", "updated_at"):
+        if key in job and job[key] is not None:
+            job[key] = job[key].isoformat() if hasattr(job[key], "isoformat") else str(job[key])
+    return job
+
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
 async def get_job_status(job_id: str):
     """Get the status of a processing job"""
@@ -32,4 +43,7 @@ async def list_jobs(status: str = None, limit: int = 10):
     cursor = db.jobs.find(query).sort("created_at", -1).limit(limit)
     jobs = await cursor.to_list(length=limit)
     
-    return {"jobs": jobs}
+    # Sanitize each job (remove ObjectId, convert datetimes)
+    sanitized = [_sanitize_job(j) for j in jobs]
+    
+    return {"jobs": sanitized}
