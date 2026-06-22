@@ -11,11 +11,10 @@ echo "║          Starting Video Processor Backend API                 ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 
-# Check if virtual environment is activated
-if [ -z "$VIRTUAL_ENV" ]; then
-    echo "🔄 Activating virtual environment..."
-    source venv/bin/activate
-fi
+# Always activate the backend virtual environment
+# (even if another venv is already active, we need the backend-specific one)
+echo "🔄 Activating backend virtual environment..."
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/venv/bin/activate"
 
 echo "✅ Virtual environment is active"
 echo ""
