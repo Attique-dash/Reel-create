@@ -34,37 +34,43 @@ def analyze_moments(transcript: dict, settings: dict = None) -> list:
         clip_duration = settings.get('clip_duration', 60)
         video_duration = transcript.get('duration', 300)
         
-        # Prepare detailed prompt
+        # Prepare detailed prompt with full transcript context
         segments_text = "\n".join([
             f"[{s['start']:.1f}s - {s['end']:.1f}s]: {s['text']}"
-            for s in transcript.get('segments', [])[:20]  # Limit segments for prompt
+            for s in transcript.get('segments', [])
         ])
         
         prompt = f"""
-        Analyze this video transcript and identify the {num_clips} most engaging moments for short-form social media content (TikTok, Reels, Shorts).
-        
-        Video Duration: {video_duration:.1f} seconds
-        Full Transcript: {transcript.get('text', '')[:2000]}
-        
-        Key Segments:
-        {segments_text}
-        
-        For each moment, ensure:
-        - Appropriate for {clip_duration}s clips
-        - High engagement potential
-        - Natural start/end points
-        
-        Return ONLY valid JSON array (no markdown, no code blocks):
-        [
-            {{
-                "start_time": <float>,
-                "end_time": <float>,
-                "engagement_score": <float 0-1>,
-                "reason": "<brief explanation>",
-                "tags": ["<tag1>", "<tag2>"]
-            }}
-        ]
-        """
+You are an expert video content analyst. Analyze this video transcript and identify the {num_clips} most engaging moments for short-form social media content (TikTok, Reels, Shorts).
+
+Video Duration: {video_duration:.1f} seconds
+Requested clip duration: ~{clip_duration}s each
+
+FULL TRANSCRIPT:
+{transcript.get('text', '')}
+
+TIMESTAMPED SEGMENTS:
+{segments_text}
+
+CRITICAL RULES:
+1. Tags MUST be directly derived from the actual content of each segment - use words, topics, and themes that appear in the transcript text
+2. Do NOT invent tags about topics not mentioned in the video
+3. Engagement score must reflect actual content quality: consider emotional intensity, hook strength, information density, and shareability
+4. Each clip must have natural start/end points at sentence or thought boundaries
+5. Clips should not overlap significantly
+6. Return EXACTLY {num_clips} moments
+
+Return ONLY valid JSON array (no markdown, no code blocks, no explanation):
+[
+    {{
+        "start_time": <float seconds>,
+        "end_time": <float seconds>,
+        "engagement_score": <float 0.0-1.0>,
+        "reason": "<specific reason based on actual transcript content>",
+        "tags": ["<word or phrase from transcript>", "<topic from content>", "<theme discussed>"]
+    }}
+]
+"""
         
         logger.info(f"Requesting {num_clips} moments from Gemini API")
         response = model.generate_content(prompt)

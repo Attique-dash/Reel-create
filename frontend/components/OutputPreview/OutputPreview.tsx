@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import type { Clip } from "@/lib/api"
-import { downloadClip, downloadAllClips } from "@/lib/api"
+import { downloadClip, downloadAllClips, previewClip } from "@/lib/api"
 
 interface OutputPreviewProps {
   clips: Clip[]
@@ -132,7 +132,7 @@ export default function OutputPreview({ clips, jobId, onClose }: OutputPreviewPr
                 <div className="bg-black rounded-xl overflow-hidden aspect-[9/16] max-h-[60vh] mx-auto">
                   {selectedClip.video_path ? (
                     <video
-                      src={`/api/preview/${selectedClip.id}`}
+                      src={previewClip(selectedClip.id)}
                       controls
                       autoPlay
                       className="w-full h-full object-contain"

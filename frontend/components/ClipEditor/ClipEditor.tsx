@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import type { Clip } from "@/lib/api"
-import { downloadClip } from "@/lib/api"
+import { downloadClip, previewClip } from "@/lib/api"
 
 interface ClipEditorProps {
   clips: Clip[]
@@ -120,7 +120,7 @@ export default function ClipEditor({ clips, jobId, onClipUpdate }: ClipEditorPro
           <div className="aspect-[9/16] max-h-80 bg-gray-900 rounded-xl flex items-center justify-center mx-auto overflow-hidden">
             {selected.video_path ? (
               <video
-                src={`/api/preview/${selected.id}`}
+                src={previewClip(selected.id)}
                 controls
                 className="h-full w-auto"
               />

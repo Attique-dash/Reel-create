@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useParams } from "next/navigation"
 import { getJobStatus, pollJobStatus, type JobStatus } from "@/lib/api"
 import ClipEditor from "@/components/ClipEditor/ClipEditor"
@@ -11,25 +11,26 @@ export default function EditorPage() {
   const jobId = params.jobId as string
   
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null)
-  const [isPolling, setIsPolling] = useState(true)
+  const pollingRef = useRef<(() => void) | null>(null)
+  const hasInitialized = useRef(false)
 
   useEffect(() => {
-    if (!jobId) return
+    if (!jobId || hasInitialized.current) return
+    hasInitialized.current = true
 
     // Initial load
     getJobStatus(jobId).then(setJobStatus).catch(console.error)
 
-    // Start polling
-    const stopPolling = pollJobStatus(jobId, (status) => {
+    // Start polling - stops automatically when job completes or fails
+    pollingRef.current = pollJobStatus(jobId, (status) => {
       setJobStatus(status)
-      if (status.status === "completed" || status.status === "failed") {
-        setIsPolling(false)
-      }
     })
 
     return () => {
-      stopPolling()
-      setIsPolling(false)
+      if (pollingRef.current) {
+        pollingRef.current()
+        pollingRef.current = null
+      }
     }
   }, [jobId])
 

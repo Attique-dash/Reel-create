@@ -187,7 +187,8 @@ def process_video_task(self, job_id: str, video_source: str, source_type: str, s
         transcript = transcribe_video(video_path)
         video_duration = transcript.get("duration", 0)
         segments_count = len(transcript.get("segments", []))
-        logger.info(f"✅ Job {job_id}: Transcription completed (duration: {video_duration:.1f}s, segments: {segments_count})")
+        subtitle_path = transcript.get("subtitle_path")
+        logger.info(f"✅ Job {job_id}: Transcription completed (duration: {video_duration:.1f}s, segments: {segments_count}, subs: {subtitle_path})")
 
         update_job_status_sync(job_id, "processing", 40)
 
@@ -199,8 +200,8 @@ def process_video_task(self, job_id: str, video_source: str, source_type: str, s
         update_job_status_sync(job_id, "processing", 60)
 
         # Step 4: Create clips
-        logger.info(f"✂️ Job {job_id}: Step 4/6 - Creating {len(moments)} clips")
-        clips = create_clips(video_path, moments, merged_settings, video_duration=video_duration)
+        logger.info(f"️ Job {job_id}: Step 4/6 - Creating {len(moments)} clips")
+        clips = create_clips(video_path, moments, merged_settings, video_duration=video_duration, subtitle_path=subtitle_path)
         logger.info(f"✅ Job {job_id}: Successfully created {len(clips)} clips")
 
         update_job_status_sync(job_id, "processing", 75)

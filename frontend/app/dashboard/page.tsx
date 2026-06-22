@@ -1,9 +1,9 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { listJobs, downloadAllClips, type JobStatus } from "@/lib/api"
+import { listJobs, downloadAllClips, deleteJob, type JobStatus } from "@/lib/api"
 
 export default function DashboardPage() {
   const router = useRouter()
@@ -12,33 +12,40 @@ export default function DashboardPage() {
   const [filter, setFilter] = useState<string>("all")
   const [searchTerm, setSearchTerm] = useState("")
 
-  useEffect(() => {
-    loadJobs()
-  }, [filter])
+  const jobsRef = useRef<JobStatus[]>([])
+  const loadJobsRef = useRef<() => Promise<void>>()
 
-  // Add this after the existing useEffect
-useEffect(() => {
-  const interval = setInterval(() => {
-    if (jobs.some(job => job.status === "processing" || job.status === "pending")) {
-      loadJobs()
-    }
-  }, 5000) // Refresh every 5 seconds if there are active jobs
-
-  return () => clearInterval(interval)
-}, [jobs]) // Only re-run when jobs change
-
-  const loadJobs = async () => {
+  const loadJobs = useCallback(async () => {
     setLoading(true)
     try {
       const status = filter === "all" ? undefined : filter
       const response = await listJobs(status, 20)
+      jobsRef.current = response.jobs
       setJobs(response.jobs)
     } catch (error) {
       console.error("Failed to load jobs:", error)
     } finally {
       setLoading(false)
     }
-  }
+  }, [filter])
+
+  useEffect(() => {
+    loadJobsRef.current = loadJobs
+  }, [loadJobs])
+
+  useEffect(() => {
+    loadJobs()
+  }, [filter])
+
+  // Stable polling: single interval, checks ref for active jobs
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (jobsRef.current.some(job => job.status === "processing" || job.status === "pending")) {
+        loadJobsRef.current?.()
+      }
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [])
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -91,6 +98,20 @@ useEffect(() => {
 
   const handleViewJob = (jobId: string) => {
     router.push(`/editor/${jobId}`)
+  }
+
+  const handleDeleteJob = async (jobId: string) => {
+    if (!confirm(`Are you sure you want to delete job ${jobId.substring(0, 8)}...? This will remove all clips and cannot be undone.`)) {
+      return
+    }
+    try {
+      await deleteJob(jobId)
+      // Remove from local state
+      setJobs(prev => prev.filter(j => j.job_id !== jobId))
+    } catch (error) {
+      console.error("Failed to delete job:", error)
+      alert("Failed to delete job. Please try again.")
+    }
   }
 
   return (
@@ -302,6 +323,13 @@ useEffect(() => {
                               >
                                 View Clips
                               </button>
+                              <button
+                                onClick={() => handleDeleteJob(job.job_id)}
+                                className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors"
+                                title="Delete job and all clips"
+                              >
+                                Delete
+                              </button>
                             </>
                           )}
                           {job.status === "processing" && (
@@ -314,10 +342,26 @@ useEffect(() => {
                             </div>
                           )}
                           {job.status === "failed" && (
-                            <span className="text-sm text-red-600">Failed - Retry</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm text-red-600">Failed</span>
+                              <button
+                                onClick={() => handleDeleteJob(job.job_id)}
+                                className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors"
+                              >
+                                Delete
+                              </button>
+                            </div>
                           )}
                           {job.status === "pending" && (
-                            <span className="text-sm text-yellow-600">Queued</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm text-yellow-600">Queued</span>
+                              <button
+                                onClick={() => handleDeleteJob(job.job_id)}
+                                className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors"
+                              >
+                                Delete
+                              </button>
+                            </div>
                           )}
                         </div>
                       </td>
