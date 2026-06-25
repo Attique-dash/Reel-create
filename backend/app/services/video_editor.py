@@ -46,7 +46,6 @@ def create_clips(video_path: str, moments: list, settings: dict, video_duration:
                 
                 # Burn subtitles if available
                 if subtitle_path and os.path.exists(subtitle_path):
-                    sub_filter = _build_subtitle_filter(subtitle_path, start_time)
                     stream = stream.filter('subtitles', subtitle_path, start_time=start_time,
                                            force_style='FontSize=14,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1,Alignment=2,MarginV=20')
                 
